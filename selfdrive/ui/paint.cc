@@ -190,7 +190,7 @@ static void ui_draw_vision_lane_lines(UIState *s) {
 
   // paint path
   NVGpaint track_bg = nvgLinearGradient(s->vg, s->fb_w, s->fb_h, s->fb_w, s->fb_h * .4,
-                                        COLOR_PURPLE, COLOR_PURPLE_ALPHA(0));
+                                        COLOR_GREEN, COLOR_GREEN_ALPHA(0));
   ui_draw_line(s, scene.track_vertices.v, scene.track_vertices.cnt, nullptr, &track_bg);
 }
 
