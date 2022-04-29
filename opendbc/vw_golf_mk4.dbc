@@ -300,6 +300,46 @@ BO_ 1408 Motor_Flexia: 8 XXX
  SG_ Zaehler_Motor_Flexia : 1|3@1+ (1,0) [0|15] "" XXX
  SG_ Multiplex_Schalter_Motor_Flexia M : 0|1@1+ (1,0) [0|0] "" XXX
 
+BO_ 1420 Motor_10: 8 ECU
+ SG_ Anzeige_StartStopp_Automatikstart : 0|4@1+ (1,0) [0|0] "" XXX
+ SG_ Anforderung_KL75 : 4|1@1+ (1,0) [0|0] "" XXX
+ SG_ Starten_in_Fahrstufe_erlaubt : 5|1@1+ (1,0) [0|0] "" XXX
+ SG_ Frei_1_6 : 6|1@1+ (1,0) [0|0] "" XXX
+ SG_ Saugrohrunterdruckdynamik : 7|1@1+ (1,0) [0|0] "" XXX
+ SG_ Systemstatus_Start_Stopp : 8|2@1+ (1,0) [0|0] "" XXX
+ SG_ Motor_Stopp : 10|1@1+ (1,0) [0|0] "" XXX
+ SG_ Wiederstart : 11|1@1+ (1,0) [0|0] "" XXX
+ SG_ Scubabschaltung : 12|1@1+ (1,0) [0|0] "" XXX
+ SG_ Druck_err_gem : 13|1@1+ (1,0) [0|0] "" XXX
+ SG_ Freigabe_Reku : 14|2@1+ (1,0) [0|0] "" XXX
+ SG_ rel_Saugrohrdruck : 16|6@1+ (1,0) [0|0] "" XXX
+ SG_ Fahrbereitschaft : 22|1@1+ (1,0) [0|0] "" XXX
+ SG_ Hybrid : 23|1@1+ (1,0) [0|0] "" XXX
+ SG_ EM_aktiv : 24|1@1+ (1,0) [0|0] "" XXX
+ SG_ VM_aktiv : 25|1@1+ (1,0) [0|0] "" XXX
+ SG_ HYB_Bereitlampe : 26|1@1+ (1,0) [0|0] "" XXX
+ SG_ HYB_Warnlampe : 27|1@1+ (1,0) [0|0] "" XXX
+ SG_ HYB_Fehlerlampe : 28|1@1+ (1,0) [0|0] "" XXX
+ SG_ Fehler_HV_Netz : 29|1@1+ (1,0) [0|0] "" XXX
+ SG_ EKlKomLeiRed : 30|2@1+ (1,0) [0|0] "" XXX
+ SG_ Klimadruck : 32|8@1+ (1,0) [0|0] "" XXX
+ SG_ KompAusCode_China_Modell_X_Y : 40|4@1+ (1,0) [0|0] "" XXX
+ SG_ StartStop_Fahrenwunsch : 44|2@1+ (1,0) [0|0] "" XXX
+ SG_ Akustikwarnung : 46|2@1+ (1,0) [0|0] "" XXX
+ SG_ Text_1_Hybrid : 48|1@1+ (1,0) [0|0] "" XXX
+ SG_ Text_2_Hybrid : 49|1@1+ (1,0) [0|0] "" XXX
+ SG_ Text_3_Hybrid : 50|1@1+ (1,0) [0|0] "" XXX
+ SG_ Text_4_Hybrid : 51|1@1+ (1,0) [0|0] "" XXX
+ SG_ Text_5_Hybrid : 52|1@1+ (1,0) [0|0] "" XXX
+ SG_ Text_6_Hybrid : 53|1@1+ (1,0) [0|0] "" XXX
+ SG_ Text_7_Hybrid : 54|1@1+ (1,0) [0|0] "" XXX
+ SG_ Text_8_Hybrid : 55|1@1+ (1,0) [0|0] "" XXX
+ SG_ ShiftLock_Lampe : 56|1@1+ (1,0) [0|0] "" XXX
+ SG_ Qualifizierung_der_Startfreigabebedingungen : 57|1@1+ (1,0) [0|0] "" XXX
+ SG_ BMSInfo_gue : 58|1@1+ (1,0) [0|0] "" XXX
+ SG_ VentilationReq : 59|1@1+ (1,0) [0|0] "" XXX
+ SG_ BattFanSpd : 60|4@1+ (1,0) [0|0] "" XXX
+
 BO_ 1416 Motor_7: 8 XXX
  SG_ Frei_Motor_7_3 : 40|24@1+ (1,0) [0|0] "" XXX
  SG_ Ladedruck : 32|8@1+ (0.01,0) [0|2.54] "bar" XXX
@@ -615,26 +655,27 @@ BO_ 1504 Klima_1: 8 XXX
  SG_ Fahrerwunsch_Zuheizer : 1|1@1+ (1,0) [0|0] "" XXX
  SG_ Drehzahlanhebung : 0|1@1+ (1,0) [0|0] "" XXX
 
-BO_ 906 GRA_neu: 4 XXX
- SG_ Tiptronik_Bedienteilfehler : 31|1@1+ (1,0) [0|0] "" XXX
- SG_ Frei_GRA_neu_1_2 : 29|2@1+ (1,0) [0|0] "" XXX
- SG_ Limiter_ein : 28|1@1+ (1,0) [0|0] "" XXX
- SG_ Zeitlueckenverstellung : 26|2@1+ (1,0) [0|0] "" XXX
- SG_ Tiptronic_Tip_Up__4_1_ : 25|1@1+ (1,0) [0|0] "" XXX
- SG_ Tiptronic_Tip_Down__4_1_ : 24|1@1+ (1,0) [0|0] "" XXX
- SG_ Zaehler__GRA_neu_ : 20|4@1+ (1,0) [0|15] "" XXX
- SG_ Sender_Codierung__4_1_ : 18|2@1+ (1,0) [0|0] "" XXX
- SG_ Wiederaufnahme : 17|1@1+ (1,0) [0|0] "" XXX
- SG_ Setzen : 16|1@1+ (1,0) [0|0] "" XXX
- SG_ GRA_Neu_frei_1 : 15|1@1+ (1,0) [0|0] "" XXX
- SG_ Bedienteil_Fehler : 14|1@1+ (1,0) [0|0] "" XXX
- SG_ Lang_Tip_up : 13|1@1+ (1,0) [0|0] "" XXX
- SG_ Lang_Tip_down : 12|1@1+ (1,0) [0|0] "" XXX
- SG_ Kurz_Tip_up : 11|1@1+ (1,0) [0|0] "" XXX
- SG_ Kurz_Tip_down : 10|1@1+ (1,0) [0|0] "" XXX
- SG_ Abbrechen : 9|1@1+ (1,0) [0|0] "" XXX
- SG_ Hauptschalter : 8|1@1+ (1,0) [0|0] "" XXX
- SG_ Checksumme_GRA_Neu : 0|8@1+ (1,0) [0|0] "" XXX
+BO_ 906 GRA_Neu: 4 XXX
+ SG_ GRA_Checksum : 0|8@1+ (1,0) [0|255] "" XXX
+ SG_ GRA_Hauptschalt : 8|1@1+ (1,0) [0|1] "" XXX
+ SG_ GRA_Abbrechen : 9|1@1+ (1,0) [0|1] "" XXX
+ SG_ GRA_Down_kurz : 10|1@1+ (1,0) [0|1] "" XXX
+ SG_ GRA_Up_kurz : 11|1@1+ (1,0) [0|1] "" XXX
+ SG_ GRA_Down_lang : 12|1@1+ (1,0) [0|1] "" XXX
+ SG_ GRA_Up_lang : 13|1@1+ (1,0) [0|1] "" XXX
+ SG_ GRA_Fehler_Bed : 14|1@1+ (1,0) [0|1] "" XXX
+ SG_ GRA_Kodierinfo : 15|1@1+ (1,0) [0|1] "" XXX
+ SG_ GRA_Neu_Setzen : 16|1@1+ (1,0) [0|1] "" XXX
+ SG_ GRA_Recall : 17|1@1+ (1,0) [0|1] "" XXX
+ SG_ GRA_Sender : 18|2@1+ (1,0) [0|3] "" XXX
+ SG_ GRA_Neu_Zaehler : 20|4@1+ (1,0) [0|15] "" XXX
+ SG_ GRA_Tip_Down : 24|1@1+ (1,0) [0|1] "" XXX
+ SG_ GRA_Tip_Up : 25|1@1+ (1,0) [0|1] "" XXX
+ SG_ GRA_Zeitluecke : 26|2@1+ (1,0) [0|3] "" XXX
+ SG_ GRA_Sta_Limiter : 28|1@1+ (1,0) [0|1] "" XXX
+ SG_ GRA_Typ_Hauptschalt : 29|1@1+ (1,0) [0|1] "" XXX
+ SG_ GRA_Sportschalter : 30|1@1+ (1,0) [0|1] "" XXX
+ SG_ GRA_Fehler_Tip : 31|1@1+ (1,0) [0|1] "" XXX
 
 BO_ 904 GRA: 3 XXX
  SG_ Checksumme_GRA_alt : 16|8@1+ (1,0) [0|0] "" XXX
@@ -856,11 +897,19 @@ BO_ 424 Bremse_6: 3 XXX
  SG_ Bremsdruck__Bremse_6_ : 0|10@1+ (0.3255,-40) [-40|293] "bar" XXX
 
 BO_ 1192 Bremse_5: 8 XXX
+ SG_ Giergeschwindigkeit : 0|14@1+ (0.01,0) [0|100] "Grad/sec" XXX
  SG_ Checksumme_Bremse_5 : 56|8@1+ (1,0) [0|0] "" XXX
  SG_ Zaehler_Bremse_5 : 52|4@1+ (1,0) [0|15] "" XXX
  SG_ Bremslicht_ECD : 51|1@1+ (1,0) [0|0] "" XXX
  SG_ Bremsentemperatur_vorn : 48|3@1+ (125,125) [125|1000] "C" XXX
- SG_ Frei_Bremse_5_5 : 40|8@1+ (1,0) [0|0] "" XXX
+ SG_ AWV2_Fehler : 47|1@1+ (1,0) [0|0] "" XXX
+ SG_ AWV2_Durchfuehrung_Bremsruck : 46|1@1+ (1,0) [0|0] "" XXX
+ SG_ ECD_Rueckfall : 45|1@1+ (1,0) [0|0] "" XXX
+ SG_ Notbremsung_Notfallblinken : 44|1@1+ (1,0) [0|0] "" XXX
+ SG_ AnhStabAktiv : 43|1@1+ (1,0) [0|0] "" XXX
+ SG_ v_Ueberw : 42|1@1+ (1,0) [0|0] "" XXX
+ SG_ Anfahrhilfe_aktiv : 41|1@1+ (1,0) [0|0] "" XXX
+ SG_ FStatus_Anfahrhilfe : 40|1@1+ (1,0) [0|0] "" XXX
  SG_ Offset_Gierrate : 32|8@1+ (0.05,-6.375) [-6.375|6.375] "deg/s" XXX
  SG_ Vorzeichen_Bremsdruck : 31|1@1+ (1,0) [0|0] "" XXX
  SG_ Status_Bremsdruck_durch_ESP_Sys : 30|1@1+ (1,0) [0|0] "" XXX
@@ -1138,9 +1187,57 @@ BO_ 210 HCA_1: 5 XXX
  SG_ Vib_Freq : 32|4@1+ (4,0) [0|60] "Hz" XXX
  SG_ Vib_Amp : 36|4@1+ (0.5,0) [0|7.5] "Nm" XXX
 
+BO_ 644 MOB_1: 6 Motor_Diesel
+ SG_ MOB_Standby : 12|1@1+ (1,0) [0|1] "" Bremse_MK25AESP
+ SG_ MOB_Freigabe : 14|1@1+ (1,0) [0|1] "" BCM_Gateway,Bremse_MK25AESP,Gateway_separat
+ SG_ MOB_Anhaltewunsch : 13|1@1+ (1,0) [0|1] "" Bremse_MK25AESP,Getriebe_DQ
+ SG_ PQ_MOB_CHECKSUM : 0|8@1+ (1,0) [0|255] "" Bremse_MK25AESP
+ SG_ PQ_MOB_COUNTER : 8|4@1+ (1,0) [0|15] "" Bremse_MK25AESP
+ SG_ TSK_v_Begrenzung_aktiv : 15|1@0+ (1,0) [0|1] "" XXX
+ SG_ TSK_ax_Getriebe_01 : 40|8@1+ (0.048,0) [0|255] "m/s2" XXX
+ SG_ MOB_Bremsstgr : 16|11@1+ (0.76,0) [0|100] "Unit_PerCent" Vector__XXX
+ SG_ MOB_Bremsmom : 27|13@1+ (1,0) [0|8190] "Unit_NewtoMeter" Bremse_MK25AES
+
+BO_ 870 mAWV: 5 ACC
+ SG_ AWV_2_Gurtstraffer : 39|1@1+ (1,0) [0|1] ""  Bremsbooster
+ SG_ AWV_Infoton : 38|1@1+ (1,0) [0|1] ""  Gateway_Kbi_VW_A,Bremsbooster
+ SG_ AWV_2_Warnsymbol : 37|1@1+ (1,0) [0|1] ""  Gateway_Kbi_VW_A,Bremsbooster
+ SG_ AWV_2_Warnton : 36|1@1+ (1,0) [0|1] ""  Gateway_Kbi_VW_A,Bremsbooster
+ SG_ AWV_2_Ruckprofil : 33|3@1+ (1,0) [0|7] ""  Bremsbooster
+ SG_ AWV_2_Freigabe : 32|1@1+ (1,0) [0|1] ""  Bremsbooster
+ SG_ AWV_2_Umfeldwarn : 31|1@1+ (1,0) [0|1] ""  Bremsbooster
+ SG_ AWV_2_SU_Lampe : 30|1@1+ (1,0) [0|1] ""  Bremsbooster
+ SG_ AWV_2_SU_Gong : 29|1@1+ (1,0) [0|1] ""  Bremsbooster
+ SG_ AWV_2_SU_Bremsruck : 28|1@1+ (1,0) [0|1] ""  Bremsbooster
+ SG_ AWV_2_SU_Warnzeit : 26|2@1+ (1,0) [0|3] ""  Bremsbooster
+ SG_ AWV_2_Fehler : 25|1@1+ (1,0) [0|1] ""  Gateway_Kbi_VW_A,Bremsbooster
+ SG_ AWV_2_Status : 24|1@1+ (1,0) [0|1] ""  Gateway_Kbi_VW_A,Bremsbooster
+ SG_ AWV_res_20 : 20|4@1+ (1,0) [0|0] ""  Bremsbooster
+ SG_ AWV_1_Parameter : 18|2@1+ (1,0) [0|3] ""  Bremsbooster
+ SG_ AWV_1_Prefill : 17|1@1+ (1,0) [0|1] ""  Bremsbooster
+ SG_ AWV_1_Freigabe : 16|1@1+ (1,0) [0|1] ""  Bremsbooster
+ SG_ AWV_Text : 12|4@1+ (1,0) [0|15] ""  Gateway_Kbi_VW_A,Bremsbooster
+ SG_ AWV_Zaehler : 8|4@1+ (1,0) [0|15] ""  Bremsbooster
+ SG_ AWV_Checksumme : 0|8@1+ (1,0) [0|255] ""  Bremsbooster
+
+BO_ 512 GAS_COMMAND: 6 EON
+ SG_ GAS_COMMAND : 7|16@0+ (0.5,0) [0|1] "" INTERCEPTOR
+ SG_ GAS_COMMAND2 : 23|16@0+ (0.9857,0) [0|1] "" INTERCEPTOR
+ SG_ ENABLE : 39|1@0+ (1,0) [0|1] "" INTERCEPTOR
+ SG_ COUNTER_PEDAL : 35|4@0+ (1,0) [0|15] "" INTERCEPTOR
+ SG_ CHECKSUM_PEDAL : 47|8@0+ (1,0) [0|255] "" INTERCEPTOR
+
+BO_ 513 GAS_SENSOR: 6 INTERCEPTOR
+ SG_ STATE : 39|4@0+ (1,0) [0|15] "" EON
+ SG_ COUNTER_PEDAL : 35|4@0+ (1,0) [0|15] "" EON
+ SG_ CHECKSUM_PEDAL : 47|8@0+ (1,0) [0|255] "" EON
+ SG_ INTERCEPTOR_GAS : 7|16@0+ (0.5,0) [0|1] "" EON
+ SG_ INTERCEPTOR_GAS2 : 23|16@0+ (0.9857,0) [0|1] "" EON
+
 BO_ 1470 LDW_1: 8 XXX
  SG_ Right_Lane_Status : 0|2@1+ (1,0) [0|3] "" XXX
  SG_ Left_Lane_Status : 2|2@1+ (1,0) [0|3] "" XXX
+ SG_ LDW_Textbits : 12|4@1+ (1,0) [0|1] "" XXX
  SG_ LDW_Direction : 14|1@0+ (1,0) [0|1] "" XXX
  SG_ SET_ME_X1 : 18|1@0+ (1,0) [0|1] "" XXX
  SG_ Kombi_Lamp_Orange : 19|1@0+ (1,0) [0|1] "" XXX
@@ -1149,7 +1246,23 @@ BO_ 1470 LDW_1: 8 XXX
  SG_ XX_DLCORTLC1 : 24|8@1+ (1,0) [0|255] "" XXX
  SG_ XX_DLCORTLC2 : 32|8@1+ (1,0) [0|255] "" XXX
 
-BO_ 428 mBremse_8: 8 XXX
+BO_ 1626 mFLA_1: 8 XXX
+ SG_ FL_LD_Fehler : 12|1@0+ (1,0) [0|1] "" XXX
+ SG_ FL1_FLA_aktiv : 13|1@0+ (1,0) [0|1] "" XXX
+ SG_ FL1_ISP_defekt : 14|1@0+ (1,0) [0|1] "" XXX
+ SG_ FL1_Sensor_blockiert : 15|1@0+ (1,0) [0|1] "" XXX
+ SG_ FL1_Abblendursache : 16|8@1+ (1,0) [0|1] "" XXX
+ SG_ FL1_Fernlicht_PWM : 24|7@1+ (1,0) [0|1] "" XXX
+ SG_ FL1_ISP_Lichtwert_vo : 32|6@1+ (1,0) [0|1] "" XXX
+ SG_ FL1_ISP_Lichtwert_hi : 40|6@1+ (1,0) [0|1] "" XXX
+ SG_ FL1_ISP_Himmelsrichtung : 48|5@1+ (1,0) [0|1] "" XXX
+ SG_ FL1_ISP_Taste : 53|1@0+ (1,0) [0|1] "" XXX
+ SG_ FL1_ISP_EC_aktiv : 54|1@0+ (1,0) [0|1] "" XXX
+ SG_ FL1_ISP_Kompass_aktiv : 55|1@0+ (1,0) [0|1] "" XXX
+ SG_ FL1_Dimmwert_ASP : 56|6@1+ (1,0) [0|1] "" XXX
+ SG_ FL1_FLA_Aufblenden : 62|1@0+ (1,0) [0|1] "" XXX
+
+BO_ 428 Bremse_8: 8 XXX
  SG_ BR8_Checksumme : 0|8@1+ (1,0) [0|255] "" XXX
  SG_ BR8_Zaehler : 8|4@1+ (1,0) [0|15] "" XXX
  SG_ BR8_Sta_ACC_Anf : 12|1@1+ (1,0) [0|1] "" XXX
@@ -1172,6 +1285,17 @@ BO_ 428 mBremse_8: 8 XXX
  SG_ BR8_Sta_BLS : 61|1@1+ (1,0) [0|1] "" XXX
  SG_ BR8_Verz_EPB : 62|1@1+ (1,0) [0|1] "" XXX
  SG_ BR8_Check_EPB : 63|1@1+ (1,0) [0|1] "" XXX
+
+BO_ 174 mBremse_9: 8 XXX
+ SG_ BR9_Checksumme : 0|8@1+ (1,0) [0|255] "" XXX
+ SG_ BR9_Sta_ESP_PLA : 8|4@1+ (1,0) [0|1] "" XXX
+ SG_ Zaehler : 12|4@1+ (1,0) [0|15] "" XXX
+ SG_ BR9_LMOffSign : 31|1@0+ (1,0) [0|1] "" XXX
+ SG_ BR9_LWOffSign : 47|1@0+ (1,0) [0|1] "" XXX
+ SG_ BR9_Sta_DSR : 48|4@1+ (1,0) [0|1] "" XXX
+ SG_ BR9_PLA_Abbruch : 52|3@1+ (1,0) [0|1] "" XXX
+ SG_ BR9_LWOffset : 32|15@1+ (0.04375,0) [0|1433.55625] "" XXX
+ SG_ BR9_LMOffset : 16|15@1+ (0.03052,0) [0|1000] "cNM" XXX
 
  BO_ 928 Bremse_10: 8 XXX
   SG_ B10_Checksumme : 0|8@1+ (1,0) [0|255] "" XXX
@@ -1397,4 +1521,4 @@ CM_ SG_ 1470 XX_DLCORTLC1 "Might be DLC or TLC";
 CM_ SG_ 1470 XX_DLCORTLC2 "Might be DLC or TLC, might have wrong size";
 CM_ SG_ 1550 MFA_v_Signal_02 "0=km/h, 1=mph";
 
-VAL_ 1088 Waehlhebelposition__Getriebe_1_ 8 "P" 7 "R" 6 "N" 5 "D" 9 "U";
+VAL_ 1088 Waehlhebelposition__Getriebe_1_ 8 "P" 7 "R" 6 "N" 5 "D" 9 "U" 12 "S" 14 "T" 10 "T" 11 "T";
