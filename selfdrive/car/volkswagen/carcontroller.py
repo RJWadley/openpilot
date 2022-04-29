@@ -38,7 +38,10 @@ class CarController():
 
     self.steer_rate_limited = False
 
-  def update(self, enabled, CS, frame, actuators, visual_alert, audible_alert, leftLaneVisible, rightLaneVisible):
+
+
+
+  def update(self, enabled, CS, frame, actuators, visual_alert, audible_alert, leftLaneVisible, rightLaneVisible, dragonconf):
     """ Controls thread """
 
     P = CarControllerParams
