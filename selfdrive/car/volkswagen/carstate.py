@@ -237,7 +237,7 @@ class CarState(CarStateBase):
 
     # Update ACC radar status.
     # FIXME: This is unfinished and not fully correct, need to improve further
-    ret.cruiseState.available = bool(pt_cp.vl["GRA_Neu"]['GRA_Hauptschalt'])
+    ret.cruiseState.available = bool(pt_cp.vl["GRA_neu"]['GRA_Hauptschalt'])
     ret.cruiseState.enabled = True if pt_cp.vl["Motor_2"]['GRA_Status'] in [1, 2] else False
 
     # Set override flag for openpilot enabled state.
@@ -259,12 +259,12 @@ class CarState(CarStateBase):
       ret.cruiseState.speed = 0
 
     # Update control button states for turn signals and ACC controls.
-    self.buttonStates["accelCruise"] = bool(pt_cp.vl["GRA_Neu"]['GRA_Up_kurz']) or bool(pt_cp.vl["GRA_Neu"]['GRA_Up_lang'])
-    self.buttonStates["decelCruise"] = bool(pt_cp.vl["GRA_Neu"]['GRA_Down_kurz']) or bool(pt_cp.vl["GRA_Neu"]['GRA_Down_lang'])
-    self.buttonStates["cancel"] = bool(pt_cp.vl["GRA_Neu"]['GRA_Abbrechen'])
-    self.buttonStates["setCruise"] = bool(pt_cp.vl["GRA_Neu"]['GRA_Neu_Setzen'])
-    self.buttonStates["resumeCruise"] = bool(pt_cp.vl["GRA_Neu"]['GRA_Recall'])
-    self.buttonStates["gapAdjustCruise"] = bool(pt_cp.vl["GRA_Neu"]['GRA_Zeitluecke'])
+    self.buttonStates["accelCruise"] = bool(pt_cp.vl["GRA_neu"]['GRA_Up_kurz']) or bool(pt_cp.vl["GRA_neu"]['GRA_Up_lang'])
+    self.buttonStates["decelCruise"] = bool(pt_cp.vl["GRA_neu"]['GRA_Down_kurz']) or bool(pt_cp.vl["GRA_neu"]['GRA_Down_lang'])
+    self.buttonStates["cancel"] = bool(pt_cp.vl["GRA_neu"]['GRA_Abbrechen'])
+    self.buttonStates["setCruise"] = bool(pt_cp.vl["GRA_neu"]['GRA_neu_Setzen'])
+    self.buttonStates["resumeCruise"] = bool(pt_cp.vl["GRA_neu"]['GRA_Recall'])
+    self.buttonStates["gapAdjustCruise"] = bool(pt_cp.vl["GRA_neu"]['GRA_Zeitluecke'])
     ret.leftBlinker = bool(pt_cp.vl["Gate_Komf_1"]['GK1_Blinker_li'])
     ret.rightBlinker = bool(pt_cp.vl["Gate_Komf_1"]['GK1_Blinker_re'])
 
@@ -272,15 +272,15 @@ class CarState(CarStateBase):
     # to the radar. Ends up being different for steering wheel buttons vs
     # third stalk type controls.
     # TODO: Check to see what info we need to passthru and spoof on PQ
-    self.graHauptschalter = pt_cp.vl["GRA_Neu"]['GRA_Hauptschalt']
-    self.graSenderCoding = pt_cp.vl["GRA_Neu"]['GRA_Sender']
+    self.graHauptschalter = pt_cp.vl["GRA_neu"]['GRA_Hauptschalt']
+    self.graSenderCoding = pt_cp.vl["GRA_neu"]['GRA_Sender']
     self.graTypHauptschalter = False
     self.graButtonTypeInfo = False
     self.graTipStufe2 = False
     # Pick up the GRA_ACC_01 CAN message counter so we can sync to it for
     # later cruise-control button spamming.
     # FIXME: will need msg counter and checksum algo to spoof GRA_neu
-    self.graMsgBusCounter = pt_cp.vl["GRA_Neu"]['GRA_Neu_Zaehler']
+    self.graMsgBusCounter = pt_cp.vl["GRA_neu"]['GRA_neu_Zaehler']
 
     # Check to make sure the electric power steering rack is configured to
     # accept and respond to HCA_01 messages and has not encountered a fault.
@@ -421,17 +421,17 @@ class CarState(CarStateBase):
       ("Bremsinfo", "Kombi_1", 0),                  # Manual handbrake applied
       ("GRA_Status", "Motor_2", 0),                 # ACC engagement status
       ("Soll_Geschwindigkeit_bei_GRA_Be", "Motor_2", 0),  # ACC speed setpoint from ECU??? check this
-      ("GRA_Hauptschalt", "GRA_Neu", 0),              # ACC button, on/off
-      ("GRA_Abbrechen", "GRA_Neu", 0),                  # ACC button, cancel
-      ("GRA_Neu_Setzen", "GRA_Neu", 0),                     # ACC button, set
-      ("GRA_Up_lang", "GRA_Neu", 0),                # ACC button, increase or accel, long press
-      ("GRA_Down_lang", "GRA_Neu", 0),              # ACC button, decrease or decel, long press
-      ("GRA_Up_kurz", "GRA_Neu", 0),                # ACC button, increase or accel, short press
-      ("GRA_Down_kurz", "GRA_Neu", 0),              # ACC button, decrease or decel, short press
-      ("GRA_Recall", "GRA_Neu", 0),                 # ACC button, resume
-      ("GRA_Zeitluecke", "GRA_Neu", 0),             # ACC button, time gap adj
-      ("GRA_Neu_Zaehler", "GRA_Neu", 0),            # ACC button, time gap adj
-      ("GRA_Sender", "GRA_Neu", 0),                 # GRA Sender Coding
+      ("GRA_Hauptschalt", "GRA_neu", 0),              # ACC button, on/off
+      ("GRA_Abbrechen", "GRA_neu", 0),                  # ACC button, cancel
+      ("GRA_neu_Setzen", "GRA_neu", 0),                     # ACC button, set
+      ("GRA_Up_lang", "GRA_neu", 0),                # ACC button, increase or accel, long press
+      ("GRA_Down_lang", "GRA_neu", 0),              # ACC button, decrease or decel, long press
+      ("GRA_Up_kurz", "GRA_neu", 0),                # ACC button, increase or accel, short press
+      ("GRA_Down_kurz", "GRA_neu", 0),              # ACC button, decrease or decel, short press
+      ("GRA_Recall", "GRA_neu", 0),                 # ACC button, resume
+      ("GRA_Zeitluecke", "GRA_neu", 0),             # ACC button, time gap adj
+      ("GRA_neu_Zaehler", "GRA_neu", 0),            # ACC button, time gap adj
+      ("GRA_Sender", "GRA_neu", 0),                 # GRA Sender Coding
       ("BR8_Sta_ADR_BR", "Bremse_8", 0),           # ABS Pump actively braking for ACC
     ]
 
@@ -443,8 +443,8 @@ class CarState(CarStateBase):
       ("Motor_3", 100),           # From J623 Engine control module
       ("Airbag_1", 50),           # From J234 Airbag control module
       ("Bremse_5", 50),           # From J104 ABS/ESP controller
+      ("GRA_neu", 50),            # From J??? steering wheel control buttons
       ("Bremse_8", 50),           # From J??? ABS/ACC controller
-      ("GRA_Neu", 50),            # From J??? steering wheel control buttons
       ("Kombi_1", 50),            # From J285 Instrument cluster
       ("Motor_2", 50),            # From J623 Engine control module
       ("Lenkhilfe_2", 20),        # From J500 Steering Assist with integrated sensors
