@@ -4,6 +4,7 @@ from selfdrive.car.volkswagen.values import CAR, BUTTON_STATES, NWL, TRANS, GEAR
 from common.params import Params, put_nonblocking
 from selfdrive.car import STD_CARGO_KG, scale_rot_inertia, scale_tire_stiffness, gen_empty_fingerprint
 from selfdrive.car.interfaces import CarInterfaceBase
+from common.dp_common import common_interface_atl, common_interface_get_params_lqr
 
 EventName = car.CarEvent.EventName
 
@@ -145,7 +146,7 @@ class CarInterface(CarInterfaceBase):
     return ret
 
   # returns a car.CarState
-  def update(self, c, can_strings):
+  def update(self, c, can_strings, dragonconf):
     buttonEvents = []
 
     # Process the most recent CAN message traffic, and check for validity
@@ -156,6 +157,11 @@ class CarInterface(CarInterfaceBase):
 
     ret = self.CS.update(self.cp, self.cp_cam, self.cp_acc, self.CP.transmissionType)
     ret.canValid = True # self.cp.can_valid  # FIXME: Restore cp_cam valid check after proper LKAS camera detect
+
+
+    # dp
+    self.dragonconf = dragonconf
+    ret.cruiseState.enabled = common_interface_atl(ret, dragonconf.dpAtl)
     ret.steeringRateLimited = self.CC.steer_rate_limited if self.CC is not None else False
 
     # TODO: add a field for this to carState, car interface code shouldn't write params
@@ -184,7 +190,7 @@ class CarInterface(CarInterfaceBase):
     #PQTIMEBOMB STUFF START
     #Warning alert for the 6min timebomb found on PQ's
     ret.stopSteering = False
-    if True: #(self.frame % 100) == 0: # Set this to false/False if you want to turn this feature OFF!
+    if dragonconf.dpTimebombAssist: #(self.frame % 100) == 0: # Set this to false/False if you want to turn this feature OFF!
       if ret.cruiseState.enabled:
         self.pqCounter += 1
       if self.pqCounter >= 330*100: #time in seconds until counter threshold for pqTimebombWarn alert
@@ -227,6 +233,6 @@ class CarInterface(CarInterfaceBase):
                    c.hudControl.visualAlert,
                    c.hudControl.audibleAlert,
                    c.hudControl.leftLaneVisible,
-                   c.hudControl.rightLaneVisible)
+                   c.hudControl.rightLaneVisible, self.dragonconf)
     self.frame += 1
     return can_sends

@@ -5,6 +5,7 @@ from selfdrive.car.volkswagen import volkswagencan
 from selfdrive.car.volkswagen.values import DBC, CANBUS, NWL, MQB_LDW_MESSAGES, BUTTON_STATES, CarControllerParams, PQ_LDW_MESSAGES
 from opendbc.can.packer import CANPacker
 
+
 class CarController():
   def __init__(self, dbc_name, CP, VM):
     self.apply_steer_last = 0
@@ -38,7 +39,7 @@ class CarController():
 
     self.steer_rate_limited = False
 
-  def update(self, enabled, CS, frame, actuators, visual_alert, audible_alert, leftLaneVisible, rightLaneVisible):
+  def update(self, enabled, CS, frame, actuators, visual_alert, audible_alert, leftLaneVisible, rightLaneVisible, dragonconf):
     """ Controls thread """
 
     P = CarControllerParams
