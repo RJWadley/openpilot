@@ -11,6 +11,15 @@ class CarState(CarStateBase):
     super().__init__(CP)
     can_define = CANDefine(DBC[CP.carFingerprint]['pt'])
 
+    ### START OF MAIN CONFIG OPTIONS ###
+    ### Do NOT modify here, modify in /data/bb_openpilot.cfg and reboot
+    self.useTeslaRadar = CP.enableGasInterceptor
+    self.radarVIN = "5YJXCCE40HF060571"
+    self.radarOffset = 0.
+    self.radarPosition = 2
+    self.radarEpasType = 3
+    ### END OF MAIN CONFIG OPTIONS ###
+
     if CP.safetyModel == car.CarParams.SafetyModel.volkswagenPq:
       # Configure for PQ35/PQ46/NMS network messaging
       self.get_can_parser = self.get_pq_can_parser
@@ -18,6 +27,8 @@ class CarState(CarStateBase):
       self.update = self.update_pq
       if CP.transmissionType == TRANS.automatic:
         self.shifter_values = can_define.dv["Getriebe_1"]['Waehlhebelposition__Getriebe_1_']
+      if CP.enableGasInterceptor:
+        self.openpilot_enabled = False
     else:
       # Configure for MQB network messaging (default)
       self.get_can_parser = self.get_mqb_can_parser
@@ -173,6 +184,7 @@ class CarState(CarStateBase):
     ret.vEgoRaw = float(np.mean([ret.wheelSpeeds.fl, ret.wheelSpeeds.fr, ret.wheelSpeeds.rl, ret.wheelSpeeds.rr]))
     ret.vEgo, ret.aEgo = self.update_speed_kf(ret.vEgoRaw)
 
+
     ret.standstill = ret.vEgoRaw < 0.1
 
     # Update steering angle, rate, yaw rate, and driver input torque. VW send
@@ -184,8 +196,13 @@ class CarState(CarStateBase):
     ret.yawRate = pt_cp.vl["Bremse_5"]['Giergeschwindigkeit'] * (1, -1)[int(pt_cp.vl["Bremse_5"]['Vorzeichen_der_Giergeschwindigk'])] * CV.DEG_TO_RAD
 
     # Update gas, brakes, and gearshift.
-    ret.gas = pt_cp.vl["Motor_3"]['Fahrpedal_Rohsignal'] / 100.0
-    ret.gasPressed = ret.gas > 0
+    if not self.CP.enableGasInterceptor:
+      ret.gas = pt_cp.vl["Motor_3"]['Fahrpedal_Rohsignal'] / 100.0
+      ret.gasPressed = ret.gas > 0
+    else:
+      ret.gas = (cam_cp.vl["GAS_SENSOR"]['INTERCEPTOR_GAS'] + cam_cp.vl["GAS_SENSOR"]['INTERCEPTOR_GAS2']) / 2.
+      ret.gasPressed = ret.gas > 468
+
     ret.brake = pt_cp.vl["Bremse_5"]['Bremsdruck'] / 250.0  # FIXME: this is pressure in Bar, not sure what OP expects
     ret.brakePressed = bool(pt_cp.vl["Motor_2"]['Bremstestschalter'])
     ret.brakeLights = bool(pt_cp.vl["Motor_2"]['Bremslichtschalter'])
@@ -217,44 +234,42 @@ class CarState(CarStateBase):
     # We use the speed preference for OP.
     self.displayMetricUnits = not pt_cp.vl["Einheiten_1"]["MFA_v_Einheit_02"]
 
-    # Stock FCW is considered active if a warning is displayed to the driver
-    # or the release bit for brake-jerk warning is set. Stock AEB considered
-    # active if the partial braking or target braking release bits are set.
-    # Ref: VW SSP 890253 "Volkswagen Driver Assistance Systems V2", "Front
-    # Assist with Braking: Golf Family" (applies to all MQB)
-    ret.stockFcw = False
-    ret.stockAeb = False
-
-    # Consume blind-spot radar info/warning LED states, if available
-    ret.leftBlindspot = False
-    ret.rightBlindspot = False
-
-    # Consume SWA (Lane Change Assist) relevant info from factory LDW message
-    # to pass along to the blind spot radar controller
     self.ldw_lane_warning_left = False
     self.ldw_lane_warning_right = False
     self.ldw_side_dlc_tlc = False
-    self.ldw_dlc = 0
-    self.ldw_tlc = 0
+    self.ldw_dlc = False
+    self.ldw_tlc = False
 
     # Update ACC radar status.
     # FIXME: This is unfinished and not fully correct, need to improve further
-    ret.cruiseState.available = bool(pt_cp.vl["GRA_neu"]['Hauptschalter'])
+    ret.cruiseState.available = bool(pt_cp.vl["GRA_Neu"]['GRA_Hauptschalt'])
     ret.cruiseState.enabled = True if pt_cp.vl["Motor_2"]['GRA_Status'] in [1, 2] else False
+
+    # Set override flag for openpilot enabled state.
+    if self.CP.enableGasInterceptor and pt_cp.vl["Motor_2"]['GRA_Status'] in [1, 2]:
+      self.openpilot_enabled = True
+
+    # Check if Gas or Brake pressed and cancel override
+    if self.CP.enableGasInterceptor and (ret.gasPressed or ret.brakePressed):
+      self.openpilot_enabled = False
+
+    # Override openpilot enabled if gas interceptor installed
+    if self.CP.enableGasInterceptor and self.openpilot_enabled:
+      ret.cruiseState.enabled = True
 
     # Update ACC setpoint. When the setpoint reads as 255, the driver has not
     # yet established an ACC setpoint, so treat it as zero.
-    ret.cruiseState.speed = acc_cp.vl["ACC_GRA_Anziege"]['ACA_V_Wunsch'] * CV.KPH_TO_MS
+    ret.cruiseState.speed = pt_cp.vl["Motor_2"]['Soll_Geschwindigkeit_bei_GRA_Be'] * CV.KPH_TO_MS
     if ret.cruiseState.speed > 70:  # 255 kph in m/s == no current setpoint
       ret.cruiseState.speed = 0
 
     # Update control button states for turn signals and ACC controls.
-    self.buttonStates["accelCruise"] = bool(pt_cp.vl["GRA_neu"]['Kurz_Tip_up']) or bool(pt_cp.vl["GRA_neu"]['Lang_Tip_up'])
-    self.buttonStates["decelCruise"] = bool(pt_cp.vl["GRA_neu"]['Kurz_Tip_down']) or bool(pt_cp.vl["GRA_neu"]['Lang_Tip_down'])
-    self.buttonStates["cancel"] = bool(pt_cp.vl["GRA_neu"]['Abbrechen'])
-    self.buttonStates["setCruise"] = bool(pt_cp.vl["GRA_neu"]['Setzen'])
-    self.buttonStates["resumeCruise"] = bool(pt_cp.vl["GRA_neu"]['Wiederaufnahme'])
-    self.buttonStates["gapAdjustCruise"] = bool(pt_cp.vl["GRA_neu"]['Zeitlueckenverstellung'])
+    self.buttonStates["accelCruise"] = bool(pt_cp.vl["GRA_Neu"]['GRA_Up_kurz']) or bool(pt_cp.vl["GRA_Neu"]['GRA_Up_lang'])
+    self.buttonStates["decelCruise"] = bool(pt_cp.vl["GRA_Neu"]['GRA_Down_kurz']) or bool(pt_cp.vl["GRA_Neu"]['GRA_Down_lang'])
+    self.buttonStates["cancel"] = bool(pt_cp.vl["GRA_Neu"]['GRA_Abbrechen'])
+    self.buttonStates["setCruise"] = bool(pt_cp.vl["GRA_Neu"]['GRA_Neu_Setzen'])
+    self.buttonStates["resumeCruise"] = bool(pt_cp.vl["GRA_Neu"]['GRA_Recall'])
+    self.buttonStates["gapAdjustCruise"] = bool(pt_cp.vl["GRA_Neu"]['GRA_Zeitluecke'])
     ret.leftBlinker = bool(pt_cp.vl["Gate_Komf_1"]['GK1_Blinker_li'])
     ret.rightBlinker = bool(pt_cp.vl["Gate_Komf_1"]['GK1_Blinker_re'])
 
@@ -262,18 +277,24 @@ class CarState(CarStateBase):
     # to the radar. Ends up being different for steering wheel buttons vs
     # third stalk type controls.
     # TODO: Check to see what info we need to passthru and spoof on PQ
-    self.graHauptschalter = pt_cp.vl["GRA_neu"]['Hauptschalter']
+    self.graHauptschalter = pt_cp.vl["GRA_Neu"]['GRA_Hauptschalt']
+    self.graSenderCoding = pt_cp.vl["GRA_Neu"]['GRA_Sender']
     self.graTypHauptschalter = False
     self.graButtonTypeInfo = False
     self.graTipStufe2 = False
     # Pick up the GRA_ACC_01 CAN message counter so we can sync to it for
     # later cruise-control button spamming.
     # FIXME: will need msg counter and checksum algo to spoof GRA_neu
-    self.graMsgBusCounter = 0
+    self.graMsgBusCounter = pt_cp.vl["GRA_Neu"]['GRA_Neu_Zaehler']
 
     # Check to make sure the electric power steering rack is configured to
     # accept and respond to HCA_01 messages and has not encountered a fault.
-    self.steeringFault = pt_cp.vl["Lenkhilfe_2"]['LH2_Sta_HCA'] not in [3, 5]
+    self.steeringFault = pt_cp.vl["Lenkhilfe_2"]['LH2_Sta_HCA'] not in [1, 3, 5, 7]
+
+    # Read ABS pump for checking in ACC braking is working.
+    if self.CP.enableGasInterceptor:
+      self.ABSWorking = pt_cp.vl["Bremse_8"]["BR8_Sta_ADR_BR"]
+      self.currentSpeed = ret.vEgo
 
     return ret
 
@@ -404,15 +425,19 @@ class CarState(CarStateBase):
       ("MFA_v_Einheit_02", "Einheiten_1", 0),       # MPH vs KMH speed display
       ("Bremsinfo", "Kombi_1", 0),                  # Manual handbrake applied
       ("GRA_Status", "Motor_2", 0),                 # ACC engagement status
-      ("Hauptschalter", "GRA_neu", 0),              # ACC button, on/off
-      ("Abbrechen", "GRA_neu", 0),                  # ACC button, cancel
-      ("Setzen", "GRA_neu", 0),                     # ACC button, set
-      ("Lang_Tip_up", "GRA_neu", 0),                # ACC button, increase or accel, long press
-      ("Lang_Tip_down", "GRA_neu", 0),              # ACC button, decrease or decel, long press
-      ("Kurz_Tip_up", "GRA_neu", 0),                # ACC button, increase or accel, short press
-      ("Kurz_Tip_down", "GRA_neu", 0),              # ACC button, decrease or decel, short press
-      ("Wiederaufnahme", "GRA_neu", 0),             # ACC button, resume
-      ("Zeitlueckenverstellung", "GRA_neu", 0),     # ACC button, time gap adj
+      ("Soll_Geschwindigkeit_bei_GRA_Be", "Motor_2", 0),  # ACC speed setpoint from ECU??? check this
+      ("GRA_Hauptschalt", "GRA_Neu", 0),              # ACC button, on/off
+      ("GRA_Abbrechen", "GRA_Neu", 0),                  # ACC button, cancel
+      ("GRA_Neu_Setzen", "GRA_Neu", 0),                     # ACC button, set
+      ("GRA_Up_lang", "GRA_Neu", 0),                # ACC button, increase or accel, long press
+      ("GRA_Down_lang", "GRA_Neu", 0),              # ACC button, decrease or decel, long press
+      ("GRA_Up_kurz", "GRA_Neu", 0),                # ACC button, increase or accel, short press
+      ("GRA_Down_kurz", "GRA_Neu", 0),              # ACC button, decrease or decel, short press
+      ("GRA_Recall", "GRA_Neu", 0),                 # ACC button, resume
+      ("GRA_Zeitluecke", "GRA_Neu", 0),             # ACC button, time gap adj
+      ("GRA_Neu_Zaehler", "GRA_Neu", 0),            # ACC button, time gap adj
+      ("GRA_Sender", "GRA_Neu", 0),                 # GRA Sender Coding
+      ("BR8_Sta_ADR_BR", "Bremse_8", 0),           # ABS Pump actively braking for ACC
     ]
 
     checks = [
@@ -423,7 +448,8 @@ class CarState(CarStateBase):
       ("Motor_3", 100),           # From J623 Engine control module
       ("Airbag_1", 50),           # From J234 Airbag control module
       ("Bremse_5", 50),           # From J104 ABS/ESP controller
-      ("GRA_neu", 50),            # From J??? steering wheel control buttons
+      ("Bremse_8", 50),           # From J??? ABS/ACC controller
+      ("GRA_Neu", 50),            # From J??? steering wheel control buttons
       ("Kombi_1", 50),            # From J285 Instrument cluster
       ("Motor_2", 50),            # From J623 Engine control module
       ("Lenkhilfe_2", 20),        # From J500 Steering Assist with integrated sensors
@@ -494,5 +520,9 @@ class CarState(CarStateBase):
       # The ACC radar is here on CANBUS.cam
       signals += [("ACA_V_Wunsch", "ACC_GRA_Anziege", 0)]  # ACC set speed
       checks += [("ACC_GRA_Anziege", 25)]  # From J428 ACC radar control module
+
+    if CP.enableGasInterceptor:
+      signals += [("INTERCEPTOR_GAS", "GAS_SENSOR", 0), ("INTERCEPTOR_GAS2", "GAS_SENSOR", 0)]
+      checks += [("GAS_SENSOR", 50)]
 
     return CANParser(DBC[CP.carFingerprint]['pt'], signals, checks, CANBUS.cam)
