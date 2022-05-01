@@ -195,9 +195,9 @@ class CarInterface(CarInterfaceBase):
         self.pqCounter += 1
       if self.pqCounter >= 330*100: #time in seconds until counter threshold for pqTimebombWarn alert
         if not self.wheelGrabbed:
-          events.add(EventName.pqTimebombWarn)
-          if self.pqCounter >= 345*100: #time in seconds until pqTimebombTERMINAL
-            events.add(EventName.pqTimebombTERMINAL)
+          events.add(EventName.timebombWarn)
+          if self.pqCounter >= 345*100: #time in seconds until timebombTERMINAL
+            events.add(EventName.timebombTERMINAL)
             if self.pqCounter >= 359*100: #time in seconds until auto bypass
               self.wheelGrabbed = True
         if self.wheelGrabbed or ret.steeringPressed:
@@ -208,9 +208,9 @@ class CarInterface(CarInterfaceBase):
             self.wheelGrabbed = False
             self.pqCounter = 0
             self.pqBypassCounter = 0
-            events.add(EventName.pqTimebombBypassed)
+            events.add(EventName.timebombBypassed)
           else:
-            events.add(EventName.pqTimebombBypassing)
+            events.add(EventName.timebombBypassing)
       if not ret.cruiseState.enabled:
         self.pqCounter = 0
     #PQTIMEBOMB STUFF END

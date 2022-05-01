@@ -887,4 +887,20 @@ EVENTS: Dict[int, Dict[str, Union[Alert, Callable[[Any, messaging.SubMaster, boo
       AlertStatus.normal, AlertSize.mid,
       Priority.LOW, VisualAlert.steerRequired, AudibleAlert.chimeWarning1, 3., 2., 3.),
   },
+  
+  EventName.timebombTERMINAL: {
+    ET.WARNING: Alert(
+      "TIMEBOMB IMMINENT",
+      "Grab wheel now!",
+      AlertStatus.critical, AlertSize.full,
+      Priority.HIGH, VisualAlert.steerRequired, AudibleAlert.chimeWarningRepeat, .1, .1, .1),
+  },
+
+  EventName.espInterventionDisengage: {
+    ET.WARNING: Alert(
+      "Automatic disengage",
+      "due to ESP intervention",
+      AlertStatus.normal, AlertSize.mid,
+      Priority.LOW, VisualAlert.steerRequired, AudibleAlert.chimePrompt, 1., 2., 5.),
+  },
 }
