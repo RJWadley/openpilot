@@ -245,9 +245,12 @@ class CarState(CarStateBase):
     ret.cruiseState.available = bool(pt_cp.vl["GRA_Neu"]['GRA_Hauptschalt'])
     ret.cruiseState.enabled = True if pt_cp.vl["Motor_2"]['GRA_Status'] in [1, 2] else False
     ret.cruiseState.stockCC = bool(pt_cp.vl["Motor_2"]['GRA_Status'] == 1)
-    print("Current Motor_2 GRA_Status:", pt_cp.vl["Motor_2"]['GRA_Status'])
-    print("Current GRA_Neu GRA_Hauptschalt:", pt_cp.vl["GRA_Neu"]['GRA_Hauptschalt'])
-    print("Current GRA_Neu GRA_Abbrechen:", pt_cp.vl["GRA_Neu"]['GRA_Abbrechen'])
+    if pt_cp.vl["Motor_2"]['GRA_Status'] != 0: 
+      print("Current Motor_2 GRA_Status:", pt_cp.vl["Motor_2"]['GRA_Status'])
+    if pt_cp.vl["GRA_Neu"]['GRA_Hauptschalt'] != 1:
+      print("Current GRA_Neu GRA_Hauptschalt:", pt_cp.vl["GRA_Neu"]['GRA_Hauptschalt'])
+    if pt_cp.vl["GRA_Neu"]['GRA_Abbrechen'] != 0:
+      print("Current GRA_Neu GRA_Abbrechen:", pt_cp.vl["GRA_Neu"]['GRA_Abbrechen'])
 
     # Set override flag for openpilot enabled state.
     if self.CP.enableGasInterceptor and pt_cp.vl["Motor_2"]['GRA_Status'] in [1, 2]:
