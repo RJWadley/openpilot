@@ -246,6 +246,7 @@ class CarState(CarStateBase):
     ret.cruiseState.enabled = True if pt_cp.vl["Motor_2"]['GRA_Status'] in [1, 2] else False
     ret.cruiseState.stockCCDisabled = bool(pt_cp.vl["Motor_2"]['GRA_Status'] == 0)
     print("STOCK CC DISABLED: ",  ret.cruiseState.stockCCDisabled)
+    print("CRUISESTATE DISABLED: ",  not ret.cruiseState.enabled)
 
     # Set override flag for openpilot enabled state.
     if self.CP.enableGasInterceptor and pt_cp.vl["Motor_2"]['GRA_Status'] in [1, 2]:
