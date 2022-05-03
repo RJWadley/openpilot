@@ -127,7 +127,7 @@ class CarController():
     #                                                                         #
     #                                                                         #
     # --------------------------------------------------------------------------
-    if (frame % P.MOB_STEP == 0) and CS.CP.enableGasInterceptor and not CS.out.cruiseState.enabled:
+    if (frame % P.MOB_STEP == 0) and CS.CP.enableGasInterceptor and not CS.out.cruiseState.stockCC:
       mobEnabled = self.mobEnabled
       mobPreEnable = self.mobPreEnable
       # TODO make sure we use the full 8190 when calculating braking.
@@ -187,7 +187,7 @@ class CarController():
     #                                                                         #
     #                                                                         #
     # --------------------------------------------------------------------------
-    if (frame % P.GAS_STEP == 0) and CS.CP.enableGasInterceptor and not CS.out.cruiseState.enabled:
+    if (frame % P.GAS_STEP == 0) and CS.CP.enableGasInterceptor and not CS.out.cruiseState.stockCC:
       apply_gas = 0
       if enabled:
         apply_gas = clip(actuators.gas, 0., 1.)
