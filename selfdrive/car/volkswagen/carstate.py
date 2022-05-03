@@ -244,9 +244,8 @@ class CarState(CarStateBase):
     # FIXME: This is unfinished and not fully correct, need to improve further
     ret.cruiseState.available = bool(pt_cp.vl["GRA_Neu"]['GRA_Hauptschalt'])
     ret.cruiseState.enabled = True if pt_cp.vl["Motor_2"]['GRA_Status'] in [1, 2] else False
-    ret.cruiseState.stockCCDisabled = True #bool(pt_cp.vl["Motor_2"]['GRA_Status'] == 0)
-    print("STATUS:", pt_cp.vl["Motor_2"]['GRA_Status'])
-    print("HAUPTSCHALT:", pt_cp.vl["GRA_Neu"]['GRA_Hauptschalt'])
+    ret.cruiseState.stockCCDisabled = bool(pt_cp.vl["Motor_2"]['GRA_Status'] == 0)
+    print("STOCK CC DISABLED: ",  ret.cruiseState.stockCCDisabled)
 
     # Set override flag for openpilot enabled state.
     if self.CP.enableGasInterceptor and pt_cp.vl["Motor_2"]['GRA_Status'] in [1, 2]:

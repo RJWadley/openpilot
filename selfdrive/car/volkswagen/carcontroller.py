@@ -127,7 +127,7 @@ class CarController():
     #                                                                         #
     #                                                                         #
     # --------------------------------------------------------------------------
-    if (frame % P.MOB_STEP == 0) and CS.CP.enableGasInterceptor and CS.out.cruiseState.stockCCDisabled:
+    if (frame % P.MOB_STEP == 0) and CS.CP.enableGasInterceptor:
       mobEnabled = self.mobEnabled
       mobPreEnable = self.mobPreEnable
       # TODO make sure we use the full 8190 when calculating braking.
@@ -156,6 +156,9 @@ class CarController():
         apply_brake = 0
         mobPreEnable = False
         mobEnabled = False
+
+      if not CS.out.cruiseState.stockCCDisabled:
+        apply_brake = 0
 
       idx = (frame / P.MOB_STEP) % 16
       self.mobPreEnable = mobPreEnable
@@ -187,10 +190,12 @@ class CarController():
     #                                                                         #
     #                                                                         #
     # --------------------------------------------------------------------------
-    if (frame % P.GAS_STEP == 0) and CS.CP.enableGasInterceptor and CS.out.cruiseState.stockCCDisabled:
+    if (frame % P.GAS_STEP == 0) and CS.CP.enableGasInterceptor:
       apply_gas = 0
       if enabled:
         apply_gas = clip(actuators.gas, 0., 1.)
+      if not CS.out.cruiseState.stockCCDisabled:
+        apply_gas = 0
 
       can_sends.append(self.create_gas_control(self.packer_pt, CANBUS.pt, apply_gas, frame // 2))
 
