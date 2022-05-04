@@ -159,6 +159,9 @@ def create_pq_acc_buttons_control(packer, bus, buttonStatesToSend, CS, idx):
     "GRA_Hauptschalt": CS.graHauptschalter,
   }
 
+  if buttonStatesToSend["cancel"]:
+    print("Sending cancel")
+
   dat = packer.make_can_msg("GRA_Neu", bus, values)[2]
   values["GRA_Checksum"] = dat[1] ^ dat[2] ^ dat[3]
   return packer.make_can_msg("GRA_Neu", bus, values)
