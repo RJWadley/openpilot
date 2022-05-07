@@ -294,7 +294,6 @@ class CarController():
           self.graButtonStatesToSend["upDownCounter"] = ceil(self.upDownCounter / 10)
 
       else:
-        print("NO ACCEL")
         self.upDownCounter = 0
         self.downInProgress = False
         self.upInProgress = False
