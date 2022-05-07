@@ -270,6 +270,8 @@ class CarController():
       elif enabled and CS.out.cruiseState.enabled and CS.CP.enableGasInterceptor:
         self.graButtonStatesToSend = BUTTON_STATES.copy()
         self.graButtonStatesToSend["cancel"] = True
+      else:
+        self.graButtonStatesToSend = BUTTON_STATES.copy()
       
       # by default PQ cruise control will fight with OP, so it has to be disabled
       # because of that, we'll have to manage the ACC buttons carefully if we want a fluid experience
