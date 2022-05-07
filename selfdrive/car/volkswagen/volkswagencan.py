@@ -157,10 +157,10 @@ def create_pq_acc_buttons_control(packer, bus, buttonStatesToSend, CS, idx):
   values = {
     "GRA_Neu_Zaehler": idx,
     "GRA_Sender": CS.graSenderCoding,
-    "GRA_Abbrechen": 0 if (upDownCounter > 0) else 1 if (buttonStatesToSend["cancel"] or CS.buttonStates["cancel"]) else 0,
+    "GRA_Abbrechen": 1 if (buttonStatesToSend["cancel"] or CS.buttonStates["cancel"]) else 0,
     "GRA_Hauptschalt": CS.graHauptschalter,
-    "GRA_Up_kurz": 1 if ((buttonStatesToSend["accelCruise"] and upDownCounter % 2) or (upDownCounter == 0 and CS.buttonStates["accelCruise"])) else 0, # true on odd iterations. if not counting use car state
-    "GRA_Down_kurz": 1 if ((buttonStatesToSend["decelCruise"] and upDownCounter % 2) or (upDownCounter == 0 and CS.buttonStates["accelCruise"])) else 0, # true on odd iterations. if not counting use car state
+    "GRA_Up_kurz":  1 if (buttonStatesToSend["accelCruise"] or CS.buttonStates["accelCruise"]) else 0,
+    "GRA_Down_kurz":  1 if (buttonStatesToSend["decelCruise"] or CS.buttonStates["decelCruise"]) else 0,
   }
 
   dat = packer.make_can_msg("GRA_Neu", bus, values)[2]

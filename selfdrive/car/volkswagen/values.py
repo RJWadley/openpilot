@@ -41,7 +41,6 @@ BUTTON_STATES = {
   "gapAdjustCruise": False,
   "longUp" : False,
   "longDown" : False,
-  "upDownCounter": 0
 }
 
 MQB_LDW_MESSAGES = {

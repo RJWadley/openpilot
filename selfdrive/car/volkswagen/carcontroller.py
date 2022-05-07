@@ -41,10 +41,11 @@ class CarController():
     self.steer_rate_limited = False
 
     # for pq acc button controls
-    self.upDownCounter = 0
-    self.upInProgress = False
-    self.downInProgress = False
-    self.lastFrameEnabled = False
+    self.cancelOnNextFrame = False
+    self.upOnNextFrame = False
+    self.downOnNextFrame = False
+    self.prepareUpOnNextFrame = False
+    self.prepareDownOnNextFrame = False
 
   def update(self, enabled, CS, frame, actuators, visual_alert, audible_alert, leftLaneVisible, rightLaneVisible):
     """ Controls thread """
@@ -272,32 +273,38 @@ class CarController():
       elif enabled and CS.out.cruiseState.enabled and CS.CP.enableGasInterceptor:
         self.graButtonStatesToSend = BUTTON_STATES.copy()
         self.graButtonStatesToSend["cancel"] = True
-      else:
-        self.graButtonStatesToSend = BUTTON_STATES.copy()
       
-    if enabled:
-      # by default PQ cruise control will fight with OP, so it has to be disabled
-      # because of that, we'll have to manage the ACC buttons carefully if we want a fluid experience
+    if enabled and not CS.out.cruiseState.stockCCDisabled:
       self.graButtonStatesToSend = BUTTON_STATES.copy()
-      self.graButtonStatesToSend["cancel"] = True
-      if (CS.buttonStates["decelCruise"] or (self.downInProgress)):
-        self.upDownCounter += 1
-        print("DEACCEL", self.upDownCounter)
-        if self.upDownCounter <= 40:
-          self.graButtonStatesToSend["decelCruise"] = True
-          self.graButtonStatesToSend["upDownCounter"] = ceil(self.upDownCounter / 10)
-      
-      elif (CS.buttonStates["accelCruise"] or (self.upInProgress)):
-        self.upDownCounter += 1
-        print("ACCEL", self.upDownCounter)
-        if self.upDownCounter <= 40:
-          self.graButtonStatesToSend["accelCruise"] = True
-          self.graButtonStatesToSend["upDownCounter"] = ceil(self.upDownCounter / 10)
 
-      else:
-        self.upDownCounter = 0
-        self.downInProgress = False
-        self.upInProgress = False
+      # after sending the cc buttons, send the cancel button
+      if self.cancelOnNextFrame:
+        self.graButtonStatesToSend["cancel"] = True
+
+      # after waiting one frame, actually send the cc buttons
+      if self.upOnNextFrame:
+        self.graButtonStatesToSend["accelCruise"] = True
+        self.upOnNextFrame = False
+        self.cancelOnNextFrame = True
+      if self.downOnNextFrame:
+        self.graButtonStatesToSend["decelCruise"] = True
+        self.downOnNextFrame = False
+        self.cancelOnNextFrame = True
+      
+      # wait one frame after releasing cc button
+      if self.prepareUpOnNextFrame and not CS.buttonStates["accelCruise"]:
+        self.upOnNextFrame = True
+        self.prepareUpOnNextFrame = False
+      if self.prepareDownOnNextFrame and not CS.buttonStates["decelCruise"]:
+        self.downOnNextFrame = True
+        self.prepareDownOnNextFrame = False
+
+      #track when pressing cc buttons
+      if CS.buttonStates["accelCruise"]:
+        self.prepareUpOnNextFrame = True
+      if CS.buttonStates["decelCruise"]:
+        self.prepareDownOnNextFrame = True
+
 
     # OP/Panda can see this message but can't filter it when integrated at the
     # R242 LKAS camera. It could do so if integrated at the J533 gateway, but
