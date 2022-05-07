@@ -1,3 +1,4 @@
+from math import ceil
 from cereal import car
 from common.numpy_fast import clip
 from selfdrive.car import apply_std_steer_torque_limits
@@ -277,15 +278,17 @@ class CarController():
       # because of that, we'll have to manage the ACC buttons carefully if we want a fluid experience
       if (CS.buttonStates["decelCruise"] or (self.downInProgress)):
         self.upDownCounter += 1
-        if self.upDownCounter <= 4:
+        if self.upDownCounter <= 40:
+          print("accelCruise", self.upDownCounter)
           self.graButtonStatesToSend["decelCruise"] = True
-          self.graButtonStatesToSend["upDownCounter"] = self.upDownCounter
+          self.graButtonStatesToSend["upDownCounter"] = ceil(self.upDownCounter / 10)
       
       elif (CS.buttonStates["accelCruise"] or (self.upInProgress)):
         self.upDownCounter += 1
-        if self.upDownCounter <= 4:
+        if self.upDownCounter <= 40:
+          print("accelCruise", self.upDownCounter)
           self.graButtonStatesToSend["accelCruise"] = True
-          self.graButtonStatesToSend["upDownCounter"] = self.upDownCounter
+          self.graButtonStatesToSend["upDownCounter"] = ceil(self.upDownCounter / 10)
 
       else:
         self.upDownCounter = 0
