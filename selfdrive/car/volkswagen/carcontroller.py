@@ -38,6 +38,12 @@ class CarController():
 
     self.steer_rate_limited = False
 
+    # for pq acc button controls
+    self.upDownCounter = 0
+    self.upInProgress = False
+    self.downInProgress = False
+    self.lastFrameEnabled = False
+
   def update(self, enabled, CS, frame, actuators, visual_alert, audible_alert, leftLaneVisible, rightLaneVisible):
     """ Controls thread """
 
@@ -264,7 +270,25 @@ class CarController():
       elif enabled and CS.out.cruiseState.enabled and CS.CP.enableGasInterceptor:
         self.graButtonStatesToSend = BUTTON_STATES.copy()
         self.graButtonStatesToSend["cancel"] = True
+      
+      # by default PQ cruise control will fight with OP, so it has to be disabled
+      # because of that, we'll have to manage the ACC buttons carefully if we want a fluid experience
+      if (CS.buttonStates["decelCruise"] or (self.downInProgress)):
+        self.upDownCounter += 1
+        if self.upDownCounter <= 4:
+          self.graButtonStatesToSend["decelCruise"] = True
+          self.graButtonStatesToSend["upDownCounter"] = self.upDownCounter
+      
+      elif (CS.buttonStates["accelCruise"] or (self.upInProgress)):
+        self.upDownCounter += 1
+        if self.upDownCounter <= 4:
+          self.graButtonStatesToSend["accelCruise"] = True
+          self.graButtonStatesToSend["upDownCounter"] = self.upDownCounter
 
+      else:
+        self.upDownCounter = 0
+        self.downInProgress = False
+        self.upInProgress = False
 
     # OP/Panda can see this message but can't filter it when integrated at the
     # R242 LKAS camera. It could do so if integrated at the J533 gateway, but

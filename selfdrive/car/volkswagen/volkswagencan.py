@@ -152,13 +152,15 @@ def create_pq_hud_control(packer, bus, hca_enabled, steering_pressed, hud_alert,
   return packer.make_can_msg("LDW_1", bus, values)
 
 def create_pq_acc_buttons_control(packer, bus, buttonStatesToSend, CS, idx):
+
+  upDownCounter = buttonStatesToSend[upDownCounter]
   values = {
     "GRA_Neu_Zaehler": idx,
     "GRA_Sender": CS.graSenderCoding,
-    "GRA_Abbrechen": 1 if (buttonStatesToSend["cancel"] or CS.buttonStates["cancel"]) else 0,
+    "GRA_Abbrechen": 0 if (upDownCounter > 0) else 1 if (buttonStatesToSend["cancel"] or CS.buttonStates["cancel"]) else 0,
     "GRA_Hauptschalt": CS.graHauptschalter,
-    "GRA_Up_kurz": 1 if (buttonStatesToSend["accelCruise"]) else 0,
-    "GRA_Down_kurz": 1 if (buttonStatesToSend["decelCruise"]) else 0,
+    "GRA_Up_kurz": 1 if (buttonStatesToSend["accelCruise"] and upDownCounter % 2) else 0, # true on odd iterations
+    "GRA_Down_kurz": 1 if (buttonStatesToSend["decelCruise"] and upDownCounter % 2) else 0, # true on odd iterations
   }
 
   dat = packer.make_can_msg("GRA_Neu", bus, values)[2]
