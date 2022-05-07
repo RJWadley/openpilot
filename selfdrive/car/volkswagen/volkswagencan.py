@@ -153,7 +153,7 @@ def create_pq_hud_control(packer, bus, hca_enabled, steering_pressed, hud_alert,
 
 def create_pq_acc_buttons_control(packer, bus, buttonStatesToSend, CS, idx):
 
-  upDownCounter = buttonStatesToSend[upDownCounter]
+  upDownCounter = buttonStatesToSend["upDownCounter"]
   values = {
     "GRA_Neu_Zaehler": idx,
     "GRA_Sender": CS.graSenderCoding,
