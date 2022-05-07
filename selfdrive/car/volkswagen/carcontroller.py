@@ -282,18 +282,16 @@ class CarController():
       if (CS.buttonStates["decelCruise"] or (self.downInProgress)):
         self.upDownCounter += 1
         print("DEACCEL", self.upDownCounter)
-        if self.upDownCounter <= 4:
-          print("accelCruise", self.upDownCounter)
+        if self.upDownCounter <= 40:
           self.graButtonStatesToSend["decelCruise"] = True
-          self.graButtonStatesToSend["upDownCounter"] = self.upDownCounter
+          self.graButtonStatesToSend["upDownCounter"] = ceil(self.upDownCounter / 10)
       
       elif (CS.buttonStates["accelCruise"] or (self.upInProgress)):
         self.upDownCounter += 1
         print("ACCEL", self.upDownCounter)
-        if self.upDownCounter <= 4:
-          print("accelCruise", self.upDownCounter)
+        if self.upDownCounter <= 40:
           self.graButtonStatesToSend["accelCruise"] = True
-          self.graButtonStatesToSend["upDownCounter"] = self.upDownCounter
+          self.graButtonStatesToSend["upDownCounter"] = ceil(self.upDownCounter / 10)
 
       else:
         print("NO ACCEL")
