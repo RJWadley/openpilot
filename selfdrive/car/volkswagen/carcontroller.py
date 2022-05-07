@@ -281,6 +281,7 @@ class CarController():
       if self.cancelOnNextFrame:
         print("cancel this frame")
         self.graButtonStatesToSend["cancel"] = True
+        self.cancelOnNextFrame = False
 
       # after waiting one frame, actually send the cc buttons
       if self.upOnNextFrame:
