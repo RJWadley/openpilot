@@ -166,9 +166,6 @@ class CarController():
         mobPreEnable = False
         mobEnabled = False
 
-      if not CS.out.cruiseState.stockCCDisabled:
-        apply_brake = 0
-
       idx = (frame / P.MOB_STEP) % 16
       self.mobPreEnable = mobPreEnable
       self.mobEnabled = mobEnabled
@@ -203,8 +200,6 @@ class CarController():
       apply_gas = 0
       if enabled:
         apply_gas = clip(actuators.gas, 0., 1.)
-      if not CS.out.cruiseState.stockCCDisabled:
-        apply_gas = 0
 
       can_sends.append(self.create_gas_control(self.packer_pt, CANBUS.pt, apply_gas, frame // 2))
 
