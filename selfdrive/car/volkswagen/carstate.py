@@ -246,7 +246,7 @@ class CarState(CarStateBase):
     ret.cruiseState.enabled = True if pt_cp.vl["Motor_2"]['GRA_Status'] in [1, 2] else False
     
     #in theory I should be able to use enabled above
-    #in practice that doesn't work
+    #in practice that doesn't seem to work (at least for me)
     #TODO figure out why and potentially remove this
     ret.cruiseState.stockCCDisabled = bool(pt_cp.vl["Motor_2"]['GRA_Status'] == 0)
 
