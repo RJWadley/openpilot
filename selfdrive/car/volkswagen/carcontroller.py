@@ -35,6 +35,7 @@ class CarController():
     self.graMsgSentCount = 0
     self.graMsgStartFramePrev = 0
     self.graMsgBusCounterPrev = 0
+    self.needsToBrake = False
 
     self.steer_rate_limited = False
 
@@ -157,6 +158,11 @@ class CarController():
         mobPreEnable = False
         mobEnabled = False
 
+      if apply_brake == 0:
+        self.needsToBrake = False
+      else:
+        self.needsToBrake = True
+
       if not CS.out.cruiseState.stockCCDisabled:
         apply_brake = 0
 
@@ -261,7 +267,7 @@ class CarController():
         # A subset of MQBs like to "creep" too aggressively with this implementation.
         self.graButtonStatesToSend = BUTTON_STATES.copy()
         self.graButtonStatesToSend["resumeCruise"] = True
-      elif enabled and CS.out.cruiseState.enabled and CS.CP.enableGasInterceptor:
+      elif enabled and self.needsToBrake and CS.CP.enableGasInterceptor:
         self.graButtonStatesToSend = BUTTON_STATES.copy()
         self.graButtonStatesToSend["cancel"] = True
 

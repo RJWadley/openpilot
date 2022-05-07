@@ -10,7 +10,7 @@ class CarControllerParams:
   GAS_STEP = 2                   # GAS_COMMAND message frequency 50Hz
   AWV_STEP = 2                   # ACC LED Control
 
-  GRA_VBP_STEP = 100             # Send ACC virtual button presses once a second
+  GRA_VBP_STEP = 10              # Send ACC virtual button presses once every 100ms
   GRA_VBP_COUNT = 16             # Send VBP messages for ~0.5s (GRA_ACC_STEP * 16)
 
   # Observed documented MQB limits: 3.00 Nm max, rate of change 5.00 Nm/sec.
