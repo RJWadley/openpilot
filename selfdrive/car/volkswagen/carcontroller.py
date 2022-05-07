@@ -274,7 +274,7 @@ class CarController():
         self.graButtonStatesToSend = BUTTON_STATES.copy()
         self.graButtonStatesToSend["cancel"] = True
       
-    if enabled and not CS.out.cruiseState.stockCCDisabled:
+    if enabled and not CS.out.cruiseState.stockCCDisabled and frame % P.HCA_STEP == 0:
       self.graButtonStatesToSend = BUTTON_STATES.copy()
 
       # after sending the cc buttons, send the cancel button
