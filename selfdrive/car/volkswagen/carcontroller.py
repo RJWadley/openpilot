@@ -1,3 +1,4 @@
+from cgitb import enable
 from math import ceil
 from cereal import car
 from common.numpy_fast import clip
@@ -274,7 +275,7 @@ class CarController():
       else:
         self.graButtonStatesToSend = BUTTON_STATES.copy()
       
-    if True:
+    if enabled:
       # by default PQ cruise control will fight with OP, so it has to be disabled
       # because of that, we'll have to manage the ACC buttons carefully if we want a fluid experience
       self.graButtonStatesToSend = BUTTON_STATES.copy()
