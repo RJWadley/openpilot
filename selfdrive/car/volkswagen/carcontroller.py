@@ -273,11 +273,12 @@ class CarController():
         self.graButtonStatesToSend["cancel"] = True
       else:
         self.graButtonStatesToSend = BUTTON_STATES.copy()
-
-      print("FRAME", CS.buttonStates)
       
+    if True:
       # by default PQ cruise control will fight with OP, so it has to be disabled
       # because of that, we'll have to manage the ACC buttons carefully if we want a fluid experience
+      self.graButtonStatesToSend = BUTTON_STATES.copy()
+      self.graButtonStatesToSend["cancel"] = True
       if (CS.buttonStates["decelCruise"] or (self.downInProgress)):
         self.upDownCounter += 1
         print("DEACCEL", self.upDownCounter)
@@ -293,7 +294,7 @@ class CarController():
           print("accelCruise", self.upDownCounter)
           self.graButtonStatesToSend["accelCruise"] = True
           self.graButtonStatesToSend["upDownCounter"] = self.upDownCounter
-          
+
       else:
         print("NO ACCEL")
         self.upDownCounter = 0
