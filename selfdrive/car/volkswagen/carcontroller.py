@@ -279,30 +279,37 @@ class CarController():
 
       # after sending the cc buttons, send the cancel button
       if self.cancelOnNextFrame:
+        print("cancel this frame")
         self.graButtonStatesToSend["cancel"] = True
 
       # after waiting one frame, actually send the cc buttons
       if self.upOnNextFrame:
+        print("up this frame")
         self.graButtonStatesToSend["accelCruise"] = True
         self.upOnNextFrame = False
         self.cancelOnNextFrame = True
       if self.downOnNextFrame:
+        print("Down this Frame")
         self.graButtonStatesToSend["decelCruise"] = True
         self.downOnNextFrame = False
         self.cancelOnNextFrame = True
       
       # wait one frame after releasing cc button
       if self.prepareUpOnNextFrame and not CS.buttonStates["accelCruise"]:
+        print("Prepare Up")
         self.upOnNextFrame = True
         self.prepareUpOnNextFrame = False
       if self.prepareDownOnNextFrame and not CS.buttonStates["decelCruise"]:
+        print("Prepare Down")
         self.downOnNextFrame = True
         self.prepareDownOnNextFrame = False
 
       #track when pressing cc buttons
       if CS.buttonStates["accelCruise"]:
+        print("Accel pressed while enabled")
         self.prepareUpOnNextFrame = True
       if CS.buttonStates["decelCruise"]:
+        print("Decel pressed while enabled")
         self.prepareDownOnNextFrame = True
 
 
