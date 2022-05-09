@@ -164,6 +164,9 @@ class CarController():
       else:
         self.wantsToSlowDown = True
 
+      if not CS.out.cruiseState.stockCCDisabled:
+        apply_brake = 0
+
       idx = (frame / P.MOB_STEP) % 16
       self.mobPreEnable = mobPreEnable
       self.mobEnabled = mobEnabled
