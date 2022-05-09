@@ -199,12 +199,12 @@ class CarController():
       if enabled:
         apply_gas = clip(actuators.gas, 0., 1.)
       
-      # track if OP is expecting to slow down by releasing gas
-      if apply_gas == 0:
-        self.wantsToSlowDown = True
+        # track if OP is expecting to slow down by releasing gas
+        if apply_gas == 0:
+          self.wantsToSlowDown = True
 
-      if not CS.out.cruiseState.stockCCDisabled:
-        apply_gas = 0
+        if not CS.out.cruiseState.stockCCDisabled:
+          apply_gas = 0
 
       can_sends.append(self.create_gas_control(self.packer_pt, CANBUS.pt, apply_gas, frame // 2))
 
