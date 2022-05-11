@@ -35,7 +35,7 @@ class CarController():
     self.graMsgSentCount = 0
     self.graMsgStartFramePrev = 0
     self.graMsgBusCounterPrev = 0
-    self.wantsToSlowDown = False
+    self.needsToBrake = False
 
     self.steer_rate_limited = False
 
@@ -160,9 +160,9 @@ class CarController():
 
       # track if openpilot wants to slow down by braking
       if apply_brake == 0:
-        self.wantsToSlowDown = False
+        self.needsToBrake = False
       else:
-        self.wantsToSlowDown = True
+        self.needsToBrake = True
 
       if not CS.out.cruiseState.stockCCDisabled:
         apply_brake = 0
@@ -201,10 +201,6 @@ class CarController():
       apply_gas = 0
       if enabled:
         apply_gas = clip(actuators.gas, 0., 1.)
-      
-        # track if OP is expecting to slow down by releasing gas
-        if apply_gas == 0:
-          self.wantsToSlowDown = True
 
         if not CS.out.cruiseState.stockCCDisabled:
           apply_gas = 0
@@ -273,7 +269,7 @@ class CarController():
         # A subset of MQBs like to "creep" too aggressively with this implementation.
         self.graButtonStatesToSend = BUTTON_STATES.copy()
         self.graButtonStatesToSend["resumeCruise"] = True
-      elif enabled and self.wantsToSlowDown and CS.CP.enableGasInterceptor:
+      elif enabled and self.needsToBrake and CS.CP.enableGasInterceptor:
         self.graButtonStatesToSend = BUTTON_STATES.copy()
         self.graButtonStatesToSend["cancel"] = True
 
