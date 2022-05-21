@@ -11,7 +11,7 @@ class CarController():
     self.apply_steer_last = 0
 
     self.packer_pt = CANPacker(DBC[CP.carFingerprint]['pt'])
-    self.acc_bus = CANBUS.pt if CP.networkLocation == NWL.fwdCamera else CANBUS.cam
+    self.acc_bus = CANBUS.pt #if CP.networkLocation == NWL.fwdCamera else CANBUS.cam
     
     if CP.safetyModel == car.CarParams.SafetyModel.volkswagen:
       self.create_steering_control = volkswagencan.create_mqb_steering_control
