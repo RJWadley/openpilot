@@ -244,11 +244,7 @@ class CarState(CarStateBase):
     # FIXME: This is unfinished and not fully correct, need to improve further
     ret.cruiseState.available = bool(pt_cp.vl["GRA_Neu"]['GRA_Hauptschalt'])
     ret.cruiseState.enabled = True if pt_cp.vl["Motor_2"]['GRA_Status'] in [1, 2] else False
-    
-    #in theory I should be able to use enabled above
-    #in practice that doesn't work
-    #TODO figure out why and potentially remove this
-    ret.cruiseState.stockCCDisabled = bool(pt_cp.vl["Motor_2"]['GRA_Status'] == 0)
+    ret.cruiseState.stockCCDisabled = bool(pt_cp.vl["Motor_2"]['GRA_Status'] == 0) #used to disable OP long when stock long is enabled
 
     # Set override flag for openpilot enabled state.
     if self.CP.enableGasInterceptor and pt_cp.vl["Motor_2"]['GRA_Status'] in [1, 2]:
