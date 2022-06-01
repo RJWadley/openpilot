@@ -7,7 +7,7 @@ from common.basedir import BASEDIR
 from selfdrive.swaglog import cloudlog
 
 
-TESTED_BRANCHES = ['devel', 'release2-staging', 'release3-staging', 'dashcam-staging', 'release2', 'release3', 'dashcam']
+TESTED_BRANCHES = ['devel', 'release2-staging', 'release3-staging', 'dashcam-staging', 'release2', 'release3', 'dashcam', 'crumbworks']
 
 
 def run_cmd(cmd: List[str]) -> str:
@@ -55,6 +55,7 @@ terms_version: bytes = b"2"
 
 dirty: bool = True
 comma_remote: bool = False
+crumb_remote: bool = False
 tested_branch: bool = False
 origin = get_git_remote()
 branch = get_git_full_branchname()
@@ -63,6 +64,7 @@ commit = get_git_commit()
 if (origin is not None) and (branch is not None):
   try:
     comma_remote = origin.startswith('git@github.com:commaai') or origin.startswith('https://github.com/commaai')
+    crumb_remote = origin.startswith('git@github.com:rjwadley') or origin.startswith('https://github.com/rjwadley')
     tested_branch = get_git_branch() in TESTED_BRANCHES
 
     dirty = False
@@ -77,7 +79,7 @@ if (origin is not None) and (branch is not None):
       dirty = (subprocess.call(["git", "diff-index", "--quiet", branch, "--"]) != 0)
 
       # Log dirty files
-      if dirty and comma_remote:
+      if dirty and (comma_remote or crumb_remote):
         try:
           dirty_files = run_cmd(["git", "diff-index", branch, "--"])
           cloudlog.event("dirty comma branch", version=version, dirty=dirty, origin=origin, branch=branch,
@@ -85,7 +87,7 @@ if (origin is not None) and (branch is not None):
         except subprocess.CalledProcessError:
           pass
 
-    dirty = dirty or (not comma_remote)
+    dirty = dirty or (not comma_remote and not crumb_remote)
     dirty = dirty or ('master' in branch)
 
   except subprocess.CalledProcessError:
