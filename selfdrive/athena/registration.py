@@ -95,7 +95,9 @@ def register(show_spinner=False) -> str:
 
   if dongle_id:
     params.put("DongleId", dongle_id)
-    set_offroad_alert("Offroad_UnofficialHardware", dongle_id == UNREGISTERED_DONGLE_ID)
+    
+    # eon is unofficial, no need for alert
+    # set_offroad_alert("Offroad_UnofficialHardware", dongle_id == UNREGISTERED_DONGLE_ID)
   return dongle_id
 
 
