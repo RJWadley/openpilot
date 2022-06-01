@@ -298,6 +298,14 @@ class CarState(CarStateBase):
       self.currentSpeed = ret.vEgo
       self.ABSWorking = pt_cp.vl["Bremse_8"]["BR8_Sta_ADR_BR"]
 
+    #allow engagement below 15mph
+    if ret.cruiseState.available and not ret.cruiseState.enabled:
+      if self.buttonStates["accelCruise"]:
+        self.openpilot_enabled = True
+      if self.buttonStates["decelCruise"]:
+        self.openpilot_enabled = True
+        ret.cruiseState.speed = ret.vEgo
+
     return ret
 
   @staticmethod
