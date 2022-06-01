@@ -264,12 +264,11 @@ class CarState(CarStateBase):
 
     # Update ACC setpoint. When the setpoint reads as 255, the driver has not
     # yet established an ACC setpoint, so treat it as zero.
-    currentSetSpeed = pt_cp.vl["Motor_2"]['Soll_Geschwindigkeit_bei_GRA_Be'] * CV.KPH_TO_MS
-    if currentSetSpeed > 70:  # 255 kph in m/s == no current setpoint
-      currentSetSpeed = 0
-
-    if currentSetSpeed != 0:
-      self.cruiseSpeed = currentSetSpeed
+    # currentSetSpeed = pt_cp.vl["Motor_2"]['Soll_Geschwindigkeit_bei_GRA_Be'] * CV.KPH_TO_MS
+    # if currentSetSpeed > 70:  # 255 kph in m/s == no current setpoint
+    #   currentSetSpeed = 0
+    # if currentSetSpeed != 0:
+    #   self.cruiseSpeed = currentSetSpeed
 
     # Update control button states for turn signals and ACC controls.
     self.buttonStates["accelCruise"] = bool(pt_cp.vl["GRA_Neu"]["GRA_Up_kurz"]) or bool(pt_cp.vl["GRA_Neu"]["GRA_Up_lang"])
@@ -303,6 +302,7 @@ class CarState(CarStateBase):
       self.ABSWorking = pt_cp.vl["Bremse_8"]["BR8_Sta_ADR_BR"]
 
     #allow engagement below 15mph
+    delta = 1 * CV.MPH_TO_MS
     if ret.cruiseState.available and not ret.cruiseState.enabled:
       if self.buttonStates["accelCruise"]:
         self.openpilot_enabled = True
@@ -311,6 +311,13 @@ class CarState(CarStateBase):
       if self.buttonStates["decelCruise"]:
         self.openpilot_enabled = True
         self.cruiseSpeed = max(15 * CV.MPH_TO_MS, self.cruiseSpeed)
+    if ret.cruiseState.available and ret.cruiseState.enabled:
+      if self.buttonStates["accelCruise"]:
+        self.openpilot_enabled = True
+        self.cruiseSpeed += delta
+      if self.buttonStates["decelCruise"]:
+        self.openpilot_enabled = True
+        self.cruiseSpeed = ret.vEgo - delta
 
     ret.cruiseState.speed = self.cruiseSpeed
 
