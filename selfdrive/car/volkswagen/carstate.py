@@ -264,9 +264,12 @@ class CarState(CarStateBase):
 
     # Update ACC setpoint. When the setpoint reads as 255, the driver has not
     # yet established an ACC setpoint, so treat it as zero.
-    self.cruiseSpeed = pt_cp.vl["Motor_2"]['Soll_Geschwindigkeit_bei_GRA_Be'] * CV.KPH_TO_MS
-    if self.cruiseSpeed:  # 255 kph in m/s == no current setpoint
-      self.cruiseSpeed = 0
+    currentSetSpeed = pt_cp.vl["Motor_2"]['Soll_Geschwindigkeit_bei_GRA_Be'] * CV.KPH_TO_MS
+    if currentSetSpeed > 70:  # 255 kph in m/s == no current setpoint
+      currentSetSpeed = 0
+
+    if currentSetSpeed != 0:
+      self.cruiseSpeed = currentSetSpeed
 
     # Update control button states for turn signals and ACC controls.
     self.buttonStates["accelCruise"] = bool(pt_cp.vl["GRA_Neu"]["GRA_Up_kurz"]) or bool(pt_cp.vl["GRA_Neu"]["GRA_Up_lang"])
