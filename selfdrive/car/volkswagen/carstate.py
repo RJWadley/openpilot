@@ -302,7 +302,7 @@ class CarState(CarStateBase):
       self.ABSWorking = pt_cp.vl["Bremse_8"]["BR8_Sta_ADR_BR"]
 
     #allow engagement below 15mph
-    delta = 1 * CV.MPH_TO_MS
+    delta = 0.1 * CV.MPH_TO_MS
     if ret.cruiseState.available and not ret.cruiseState.enabled:
       if self.buttonStates["accelCruise"]:
         self.openpilot_enabled = True
@@ -317,7 +317,7 @@ class CarState(CarStateBase):
         self.cruiseSpeed += delta
       if self.buttonStates["decelCruise"]:
         self.openpilot_enabled = True
-        self.cruiseSpeed = ret.vEgo - delta
+        self.cruiseSpeed -= delta
 
     ret.cruiseState.speed = self.cruiseSpeed
 
