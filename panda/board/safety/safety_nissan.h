@@ -14,7 +14,7 @@ const int NISSAN_DEG_TO_CAN = 100;
 const CanMsg NISSAN_TX_MSGS[] = {{0x169, 0, 8}, {0x2b1, 0, 8}, {0x4cc, 0, 8}, {0x20b, 2, 6}, {0x20b, 1, 6}, {0x280, 2, 8}};
 
 // Signals duplicated below due to the fact that these messages can come in on either CAN bus, depending on car model.
-AddrCheckStruct nissan_rx_checks[] = {
+AddrCheckStruct nissan_addr_checks[] = {
   {.msg = {{0x2, 0, 5, .expected_timestep = 10000U},
            {0x2, 1, 5, .expected_timestep = 10000U}, { 0 }}},  // STEER_ANGLE_SENSOR (100Hz)
   {.msg = {{0x285, 0, 8, .expected_timestep = 20000U},
@@ -28,15 +28,15 @@ AddrCheckStruct nissan_rx_checks[] = {
            {0x454, 1, 8, .expected_timestep = 100000U},
            {0x1cc, 0, 4, .expected_timestep = 10000U}}}, // DOORS_LIGHTS (10Hz) / BRAKE (100Hz)
 };
-const int NISSAN_RX_CHECK_LEN = sizeof(nissan_rx_checks) / sizeof(nissan_rx_checks[0]);
+#define NISSAN_ADDR_CHECK_LEN (sizeof(nissan_addr_checks) / sizeof(nissan_addr_checks[0]))
+addr_checks nissan_rx_checks = {nissan_addr_checks, NISSAN_ADDR_CHECK_LEN};
 
 // EPS Location. false = V-CAN, true = C-CAN
 bool nissan_alt_eps = false;
 
 static int nissan_rx_hook(CAN_FIFOMailBox_TypeDef *to_push) {
 
-  bool valid = addr_safety_check(to_push, nissan_rx_checks, NISSAN_RX_CHECK_LEN,
-                                 NULL, NULL, NULL);
+  bool valid = addr_safety_check(to_push, &nissan_rx_checks, NULL, NULL, NULL);
 
   if (valid) {
     int bus = GET_BUS(to_push);
@@ -105,10 +105,6 @@ static int nissan_tx_hook(CAN_FIFOMailBox_TypeDef *to_send) {
   bool violation = 0;
 
   if (!msg_allowed(to_send, NISSAN_TX_MSGS, sizeof(NISSAN_TX_MSGS) / sizeof(NISSAN_TX_MSGS[0]))) {
-    tx = 0;
-  }
-
-  if (relay_malfunction) {
     tx = 0;
   }
 
@@ -182,18 +178,14 @@ static int nissan_fwd_hook(int bus_num, CAN_FIFOMailBox_TypeDef *to_fwd) {
     }
   }
 
-  if (relay_malfunction) {
-    bus_fwd = -1;
-  }
-
-  // fallback to do not forward
   return bus_fwd;
 }
 
-static void nissan_init(int16_t param) {
+static const addr_checks* nissan_init(int16_t param) {
   controls_allowed = 0;
   nissan_alt_eps = param ? 1 : 0;
   relay_malfunction_reset();
+  return &nissan_rx_checks;
 }
 
 const safety_hooks nissan_hooks = {
@@ -202,6 +194,4 @@ const safety_hooks nissan_hooks = {
   .tx = nissan_tx_hook,
   .tx_lin = nooutput_tx_lin_hook,
   .fwd = nissan_fwd_hook,
-  .addr_check = nissan_rx_checks,
-  .addr_check_len = sizeof(nissan_rx_checks) / sizeof(nissan_rx_checks[0]),
 };

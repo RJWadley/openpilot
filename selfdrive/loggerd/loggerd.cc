@@ -46,7 +46,8 @@ const int DCAM_BITRATE = Hardware::TICI() ? MAIN_BITRATE : 2500000;
 
 #define NO_CAMERA_PATIENCE 500 // fall back to time-based rotation if all cameras are dead
 
-const int SEGMENT_LENGTH = getenv("LOGGERD_TEST") ? atoi(getenv("LOGGERD_SEGMENT_LENGTH")) : 60;
+const bool LOGGERD_TEST = getenv("LOGGERD_TEST");
+const int SEGMENT_LENGTH = LOGGERD_TEST ? atoi(getenv("LOGGERD_SEGMENT_LENGTH")) : 60;
 
 ExitHandler do_exit;
 
@@ -63,6 +64,7 @@ const LogCameraInfo cameras_logged[] = {
     .has_qcamera = true,
     .trigger_rotate = true,
     .enable = true,
+    .record = true,
   },
   {
     .type = DriverCam,
@@ -75,7 +77,8 @@ const LogCameraInfo cameras_logged[] = {
     .downscale = false,
     .has_qcamera = false,
     .trigger_rotate = Hardware::TICI(),
-    .enable = !Hardware::PC() && Params().getBool("RecordFront"),
+    .enable = !Hardware::PC(),
+    .record = Params().getBool("RecordFront"),
   },
   {
     .type = WideRoadCam,
@@ -89,6 +92,7 @@ const LogCameraInfo cameras_logged[] = {
     .has_qcamera = false,
     .trigger_rotate = true,
     .enable = Hardware::TICI(),
+    .record = Hardware::TICI(),
   },
 };
 const LogCameraInfo qcam_info = {
@@ -112,8 +116,35 @@ struct LoggerdState {
   std::atomic<int> waiting_rotate;
   int max_waiting = 0;
   double last_rotate_tms = 0.;
+
+  // Sync logic for startup
+  std::atomic<int> encoders_ready = 0;
+  std::atomic<uint32_t> latest_frame_id = 0;
+  bool camera_ready[WideRoadCam + 1] = {};
+  bool camera_synced[WideRoadCam + 1] = {};
 };
 LoggerdState s;
+
+// Wait for all encoders to reach the same frame id
+bool sync_encoders(LoggerdState *state, CameraType cam_type, uint32_t frame_id) {
+  if (state->camera_synced[cam_type]) return true;
+
+  if (state->max_waiting > 1 && state->encoders_ready != state->max_waiting) {
+    update_max_atomic(state->latest_frame_id, frame_id);
+    if (std::exchange(state->camera_ready[cam_type], true) == false) {
+      ++state->encoders_ready;
+      LOGE("camera %d encoder ready", cam_type);
+    }
+    return false;
+  } else {
+    // Small margin in case one of the encoders already dropped the next frame
+    uint32_t start_frame_id = state->latest_frame_id + 2;
+    bool synced = frame_id >= start_frame_id;
+    state->camera_synced[cam_type] = synced;
+    if (!synced) LOGE("camera %d waiting for frame %d, cur %d", cam_type, start_frame_id, frame_id);
+    return synced;
+  }
+}
 
 void encoder_thread(const LogCameraInfo &cam_info) {
   set_thread_name(cam_info.filename);
@@ -126,7 +157,7 @@ void encoder_thread(const LogCameraInfo &cam_info) {
 
   while (!do_exit) {
     if (!vipc_client.connect(false)) {
-      util::sleep_for(100);
+      util::sleep_for(5);
       continue;
     }
 
@@ -137,7 +168,8 @@ void encoder_thread(const LogCameraInfo &cam_info) {
 
       // main encoder
       encoders.push_back(new Encoder(cam_info.filename, buf_info.width, buf_info.height,
-                                     cam_info.fps, cam_info.bitrate, cam_info.is_h265, cam_info.downscale));
+                                     cam_info.fps, cam_info.bitrate, cam_info.is_h265,
+                                     cam_info.downscale, cam_info.record));
       // qcamera encoder
       if (cam_info.has_qcamera) {
         encoders.push_back(new Encoder(qcam_info.filename, qcam_info.frame_width, qcam_info.frame_height,
@@ -152,6 +184,9 @@ void encoder_thread(const LogCameraInfo &cam_info) {
 
       if (cam_info.trigger_rotate) {
         s.last_camera_seen_tms = millis_since_boot();
+        if (!sync_encoders(&s, cam_info.type, extra.frame_id)) {
+          continue;
+        }
       }
 
       if (cam_info.trigger_rotate && (cnt >= SEGMENT_LENGTH * MAIN_FPS)) {
@@ -182,7 +217,7 @@ void encoder_thread(const LogCameraInfo &cam_info) {
       for (int i = 0; i < encoders.size(); ++i) {
         int out_id = encoders[i]->encode_frame(buf->y, buf->u, buf->v,
                                                buf->width, buf->height, extra.timestamp_eof);
-        
+
         if (out_id == -1) {
           LOGE("Failed to encode frame. frame_id: %d encode_id: %d", extra.frame_id, encode_idx);
         }
@@ -191,8 +226,9 @@ void encoder_thread(const LogCameraInfo &cam_info) {
         if (i == 0 && out_id != -1) {
           MessageBuilder msg;
           // this is really ugly
-          auto eidx = cam_info.type == DriverCam ? msg.initEvent().initDriverEncodeIdx() :
-                     (cam_info.type == WideRoadCam ? msg.initEvent().initWideRoadEncodeIdx() : msg.initEvent().initRoadEncodeIdx());
+          bool valid = (buf->get_frame_id() == extra.frame_id);
+          auto eidx = cam_info.type == DriverCam ? msg.initEvent(valid).initDriverEncodeIdx() :
+                     (cam_info.type == WideRoadCam ? msg.initEvent(valid).initWideRoadEncodeIdx() : msg.initEvent(valid).initRoadEncodeIdx());
           eidx.setFrameId(extra.frame_id);
           eidx.setTimestampSof(extra.timestamp_sof);
           eidx.setTimestampEof(extra.timestamp_eof);
@@ -205,7 +241,6 @@ void encoder_thread(const LogCameraInfo &cam_info) {
           eidx.setSegmentNum(cur_seg);
           eidx.setSegmentId(out_id);
           if (lh) {
-            // TODO: this should read cereal/services.h for qlog decimation
             auto bytes = msg.toBytes();
             lh_log(lh, bytes.begin(), bytes.size(), true);
           }
@@ -262,7 +297,8 @@ void rotate_if_needed() {
 
   double tms = millis_since_boot();
   if ((tms - s.last_rotate_tms) > SEGMENT_LENGTH * 1000 &&
-      (tms - s.last_camera_seen_tms) > NO_CAMERA_PATIENCE) {
+      (tms - s.last_camera_seen_tms) > NO_CAMERA_PATIENCE &&
+      !LOGGERD_TEST) {
     LOGW("no camera packet seen. auto rotating");
     logger_rotate();
   }
@@ -271,7 +307,16 @@ void rotate_if_needed() {
 } // namespace
 
 int main(int argc, char** argv) {
-  setpriority(PRIO_PROCESS, 0, -20);
+  if (Hardware::EON()) {
+    setpriority(PRIO_PROCESS, 0, -20);
+  } else if (Hardware::TICI()) {
+    int ret;
+    ret = set_core_affinity({0, 1, 2, 3});
+    assert(ret == 0);
+    // TODO: why does this impact camerad timings?
+    //ret = set_realtime_priority(1);
+    //assert(ret == 0);
+  }
 
   clear_locks();
 

@@ -15,6 +15,7 @@ cdef extern from "visionbuf.h":
     size_t len
     size_t width
     size_t height
+    size_t stride
 
 cdef extern from "visionipc.h":
   struct VisionIpcBufExtra:
@@ -35,3 +36,4 @@ cdef extern from "visionipc_client.h":
     VisionIpcClient(string, VisionStreamType, bool, void*, void*)
     VisionBuf * recv(VisionIpcBufExtra *, int)
     bool connect(bool)
+    bool is_connected()

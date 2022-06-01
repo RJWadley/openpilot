@@ -13,11 +13,8 @@ const int TOYOTA_MAX_RT_DELTA = 375;      // max delta torque allowed for real t
 const uint32_t TOYOTA_RT_INTERVAL = 250000;    // 250ms between real time checks
 
 // longitudinal limits
-const int TOYOTA_MAX_ACCEL = 1500;        // 1.5 m/s2
-const int TOYOTA_MIN_ACCEL = -3000;       // -3.0 m/s2
-
-const int TOYOTA_ISO_MAX_ACCEL = 2000;        // 2.0 m/s2
-const int TOYOTA_ISO_MIN_ACCEL = -3500;       // -3.5 m/s2
+const int TOYOTA_MAX_ACCEL = 2000;        // 2.0 m/s2
+const int TOYOTA_MIN_ACCEL = -3500;       // -3.5 m/s2
 
 const int TOYOTA_STANDSTILL_THRSLD = 100;  // 1kph
 
@@ -34,14 +31,15 @@ const CanMsg TOYOTA_TX_MSGS[] = {{0x283, 0, 7}, {0x2E6, 0, 8}, {0x2E7, 0, 8}, {0
                                  {0x2E4, 0, 5}, {0x191, 0, 8}, {0x411, 0, 8}, {0x412, 0, 8}, {0x343, 0, 8}, {0x1D2, 0, 8},  // LKAS + ACC
                                  {0x200, 0, 6}};  // interceptor
 
-AddrCheckStruct toyota_rx_checks[] = {
+AddrCheckStruct toyota_addr_checks[] = {
   {.msg = {{ 0xaa, 0, 8, .check_checksum = false, .expected_timestep = 12000U}, { 0 }, { 0 }}},
   {.msg = {{0x260, 0, 8, .check_checksum = true, .expected_timestep = 20000U}, { 0 }, { 0 }}},
   {.msg = {{0x1D2, 0, 8, .check_checksum = true, .expected_timestep = 30000U}, { 0 }, { 0 }}},
   {.msg = {{0x224, 0, 8, .check_checksum = false, .expected_timestep = 25000U},
            {0x226, 0, 8, .check_checksum = false, .expected_timestep = 25000U}, { 0 }}},
 };
-const int TOYOTA_RX_CHECKS_LEN = sizeof(toyota_rx_checks) / sizeof(toyota_rx_checks[0]);
+#define TOYOTA_ADDR_CHECKS_LEN (sizeof(toyota_addr_checks) / sizeof(toyota_addr_checks[0]))
+addr_checks toyota_rx_checks = {toyota_addr_checks, TOYOTA_ADDR_CHECKS_LEN};
 
 // global actuation limit states
 int toyota_dbc_eps_torque_factor = 100;   // conversion factor for STEER_TORQUE_EPS in %: see dbc file
@@ -63,7 +61,7 @@ static uint8_t toyota_get_checksum(CAN_FIFOMailBox_TypeDef *to_push) {
 
 static int toyota_rx_hook(CAN_FIFOMailBox_TypeDef *to_push) {
 
-  bool valid = addr_safety_check(to_push, toyota_rx_checks, TOYOTA_RX_CHECKS_LEN,
+  bool valid = addr_safety_check(to_push, &toyota_rx_checks,
                                  toyota_get_checksum, toyota_compute_checksum, NULL);
 
   if (valid && (GET_BUS(to_push) == 0)) {
@@ -146,10 +144,6 @@ static int toyota_tx_hook(CAN_FIFOMailBox_TypeDef *to_send) {
     tx = 0;
   }
 
-  if (relay_malfunction) {
-    tx = 0;
-  }
-
   // Check if msg is sent on BUS 0
   if (bus == 0) {
 
@@ -171,9 +165,7 @@ static int toyota_tx_hook(CAN_FIFOMailBox_TypeDef *to_send) {
           tx = 0;
         }
       }
-      bool violation = (unsafe_mode & UNSAFE_RAISE_LONGITUDINAL_LIMITS_TO_ISO_MAX)?
-        max_limit_check(desired_accel, TOYOTA_ISO_MAX_ACCEL, TOYOTA_ISO_MIN_ACCEL) :
-        max_limit_check(desired_accel, TOYOTA_MAX_ACCEL, TOYOTA_MIN_ACCEL);
+      bool violation = max_limit_check(desired_accel, TOYOTA_MAX_ACCEL, TOYOTA_MIN_ACCEL);
 
       if (violation) {
         tx = 0;
@@ -247,33 +239,34 @@ static int toyota_tx_hook(CAN_FIFOMailBox_TypeDef *to_send) {
   return tx;
 }
 
-static void toyota_init(int16_t param) {
+static const addr_checks* toyota_init(int16_t param) {
   controls_allowed = 0;
   relay_malfunction_reset();
   gas_interceptor_detected = 0;
   toyota_dbc_eps_torque_factor = param;
+  return &toyota_rx_checks;
 }
 
 static int toyota_fwd_hook(int bus_num, CAN_FIFOMailBox_TypeDef *to_fwd) {
-
   int bus_fwd = -1;
-  if (!relay_malfunction) {
-    if (bus_num == 0) {
-      bus_fwd = 2;
-    }
-    if (bus_num == 2) {
-      int addr = GET_ADDR(to_fwd);
-      // block stock lkas messages and stock acc messages (if OP is doing ACC)
-      // in TSS2, 0x191 is LTA which we need to block to avoid controls collision
-      int is_lkas_msg = ((addr == 0x2E4) || (addr == 0x412) || (addr == 0x191));
-      // in TSS2 the camera does ACC as well, so filter 0x343
-      int is_acc_msg = (addr == 0x343);
-      int block_msg = is_lkas_msg || is_acc_msg;
-      if (!block_msg) {
-        bus_fwd = 0;
-      }
+
+  if (bus_num == 0) {
+    bus_fwd = 2;
+  }
+
+  if (bus_num == 2) {
+    int addr = GET_ADDR(to_fwd);
+    // block stock lkas messages and stock acc messages (if OP is doing ACC)
+    // in TSS2, 0x191 is LTA which we need to block to avoid controls collision
+    int is_lkas_msg = ((addr == 0x2E4) || (addr == 0x412) || (addr == 0x191));
+    // in TSS2 the camera does ACC as well, so filter 0x343
+    int is_acc_msg = (addr == 0x343);
+    int block_msg = is_lkas_msg || is_acc_msg;
+    if (!block_msg) {
+      bus_fwd = 0;
     }
   }
+
   return bus_fwd;
 }
 
@@ -283,6 +276,4 @@ const safety_hooks toyota_hooks = {
   .tx = toyota_tx_hook,
   .tx_lin = nooutput_tx_lin_hook,
   .fwd = toyota_fwd_hook,
-  .addr_check = toyota_rx_checks,
-  .addr_check_len = sizeof(toyota_rx_checks)/sizeof(toyota_rx_checks[0]),
 };
