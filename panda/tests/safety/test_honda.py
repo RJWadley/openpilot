@@ -12,29 +12,24 @@ class Btn:
   SET = 3
   RESUME = 4
 
-HONDA_NIDEC = 0
-HONDA_BOSCH = 1
+HONDA_N_HW = 0
+HONDA_BG_HW = 1
+HONDA_BH_HW = 2
 
 
-class TestHondaSafetyBase(common.PandaSafetyTest):
+class TestHondaSafety(common.PandaSafetyTest):
   MAX_BRAKE: float = 255
   PT_BUS: Optional[int] = None  # must be set when inherited
   STEER_BUS: Optional[int] = None  # must be set when inherited
-
-  STANDSTILL_THRESHOLD = 0
-  RELAY_MALFUNCTION_ADDR = 0xE4
-  RELAY_MALFUNCTION_BUS = 0
-  FWD_BUS_LOOKUP = {0: 2, 2: 0}
 
   cnt_speed = 0
   cnt_gas = 0
   cnt_button = 0
   cnt_brake = 0
-  cnt_acc_state = 0
 
   @classmethod
   def setUpClass(cls):
-    if cls.__name__ == "TestHondaSafetyBase":
+    if cls.__name__ == "TestHondaSafety":
       cls.packer = None
       cls.safety = None
       raise unittest.SkipTest
@@ -57,12 +52,7 @@ class TestHondaSafetyBase(common.PandaSafetyTest):
     self.__class__.cnt_speed += 1
     return self.packer.make_can_msg_panda("ENGINE_DATA", self.PT_BUS, values)
 
-  def _acc_state_msg(self, main_on):
-    values = {"MAIN_ON": main_on, "COUNTER": self.cnt_acc_state % 4}
-    self.__class__.cnt_acc_state += 1
-    return self.packer.make_can_msg_panda("SCM_FEEDBACK", self.PT_BUS, values)
-
-  def _button_msg(self, buttons, main_on=False):
+  def _button_msg(self, buttons):
     values = {"CRUISE_BUTTONS": buttons, "COUNTER": self.cnt_button % 4}
     self.__class__.cnt_button += 1
     return self.packer.make_can_msg_panda("SCM_BUTTONS", self.PT_BUS, values)
@@ -85,35 +75,19 @@ class TestHondaSafetyBase(common.PandaSafetyTest):
     # must be implemented when inherited
     raise NotImplementedError
 
-  def test_buttons_with_main_off(self):
-    for btn in [Btn.SET, Btn.RESUME, Btn.CANCEL]:
-      self.safety.set_controls_allowed(1)
-      self._rx(self._acc_state_msg(False))
-      self._rx(self._button_msg(btn, main_on=False))
-      self.assertFalse(self.safety.get_controls_allowed())
-
   def test_resume_button(self):
-    self._rx(self._acc_state_msg(True))
     self.safety.set_controls_allowed(0)
-    self._rx(self._button_msg(Btn.RESUME, main_on=True))
+    self._rx(self._button_msg(Btn.RESUME))
     self.assertTrue(self.safety.get_controls_allowed())
 
   def test_set_button(self):
-    self._rx(self._acc_state_msg(True))
     self.safety.set_controls_allowed(0)
-    self._rx(self._button_msg(Btn.SET, main_on=True))
+    self._rx(self._button_msg(Btn.SET))
     self.assertTrue(self.safety.get_controls_allowed())
 
   def test_cancel_button(self):
     self.safety.set_controls_allowed(1)
-    self._rx(self._button_msg(Btn.CANCEL, main_on=True))
-    self.assertFalse(self.safety.get_controls_allowed())
-
-  def test_disengage_on_main(self):
-    self.safety.set_controls_allowed(1)
-    self._rx(self._acc_state_msg(True))
-    self.assertTrue(self.safety.get_controls_allowed())
-    self._rx(self._acc_state_msg(False))
+    self._rx(self._button_msg(Btn.CANCEL))
     self.assertFalse(self.safety.get_controls_allowed())
 
   def test_disengage_on_brake(self):
@@ -132,6 +106,8 @@ class TestHondaSafetyBase(common.PandaSafetyTest):
     # checksum checks
     for msg in ["btn", "gas", "speed"]:
       self.safety.set_controls_allowed(1)
+      # TODO: add this coverage back by re-running all tests with the acura dbc
+      # to_push = self._button_msg(Btn.SET, 0x1A6)  # only in Honda_NIDEC
       if msg == "btn":
         to_push = self._button_msg(Btn.SET)
       if msg == "gas":
@@ -140,10 +116,7 @@ class TestHondaSafetyBase(common.PandaSafetyTest):
         to_push = self._speed_msg(0)
       self.assertTrue(self._rx(to_push))
       if msg != "btn":
-        to_push[0].data[4] = 0  # invalidate checksum
-        to_push[0].data[5] = 0
-        to_push[0].data[6] = 0
-        to_push[0].data[7] = 0
+        to_push[0].RDHR = 0  # invalidate checksum
         self.assertFalse(self._rx(to_push))
         self.assertFalse(self.safety.get_controls_allowed())
 
@@ -170,7 +143,7 @@ class TestHondaSafetyBase(common.PandaSafetyTest):
       self._rx(self._button_msg(Btn.SET))
       self._rx(self._speed_msg(0))
       self._rx(self._gas_msg(0))
-    self._rx(self._button_msg(Btn.SET, main_on=True))
+    self._rx(self._button_msg(Btn.SET))
     self.assertTrue(self.safety.get_controls_allowed())
 
   def test_tx_hook_on_pedal_pressed(self):
@@ -189,7 +162,7 @@ class TestHondaSafetyBase(common.PandaSafetyTest):
 
         self.safety.set_controls_allowed(1)
         hw = self.safety.get_honda_hw()
-        if hw == HONDA_NIDEC:
+        if hw == HONDA_N_HW:
           self.safety.set_honda_fwd_brake(False)
           self.assertEqual(allow_ctrl, self._tx(self._send_brake_msg(self.MAX_BRAKE)))
         self.assertEqual(allow_ctrl, self._tx(self._send_steer_msg(0x1000)))
@@ -197,7 +170,7 @@ class TestHondaSafetyBase(common.PandaSafetyTest):
         # reset status
         self.safety.set_controls_allowed(0)
         self.safety.set_unsafe_mode(UNSAFE_MODE.DEFAULT)
-        if hw == HONDA_NIDEC:
+        if hw == HONDA_N_HW:
           self._tx(self._send_brake_msg(0))
         self._tx(self._send_steer_msg(0))
         if pedal == 'brake':
@@ -207,9 +180,13 @@ class TestHondaSafetyBase(common.PandaSafetyTest):
           self._rx(self._gas_msg(0))
 
 
-class TestHondaNidecSafety(TestHondaSafetyBase, common.InterceptorSafetyTest):
+class TestHondaNidecSafety(TestHondaSafety, common.InterceptorSafetyTest):
   TX_MSGS = [[0xE4, 0], [0x194, 0], [0x1FA, 0], [0x200, 0], [0x30C, 0], [0x33D, 0]]
+  STANDSTILL_THRESHOLD = 0
+  RELAY_MALFUNCTION_ADDR = 0xE4
+  RELAY_MALFUNCTION_BUS = 0
   FWD_BLACKLISTED_ADDRS = {2: [0xE4, 0x194, 0x33D, 0x30C]}
+  FWD_BUS_LOOKUP = {0: 2, 2: 0}
 
   PT_BUS = 0
   STEER_BUS = 0
@@ -226,10 +203,8 @@ class TestHondaNidecSafety(TestHondaSafetyBase, common.InterceptorSafetyTest):
   def _interceptor_msg(self, gas, addr):
     to_send = make_msg(0, addr, 6)
     gas2 = gas * 2
-    to_send[0].data[0] = (gas & 0xFF00) >> 8
-    to_send[0].data[1] = gas & 0xFF
-    to_send[0].data[2] = (gas2 & 0xFF00) >> 8
-    to_send[0].data[3] = gas2 & 0xFF
+    to_send[0].RDLR = ((gas & 0xff) << 8) | ((gas & 0xff00) >> 8) | \
+                      ((gas2 & 0xff) << 24) | ((gas2 & 0xff00) << 8)
     return to_send
 
   def _send_brake_msg(self, brake):
@@ -286,40 +261,19 @@ class TestHondaNidecSafety(TestHondaSafetyBase, common.InterceptorSafetyTest):
       self.safety.set_gas_interceptor_detected(False)
 
 
-class TestHondaNidecAltSafety(TestHondaNidecSafety, common.InterceptorSafetyTest):
-  def setUp(self):
-    self.packer = CANPackerPanda("acura_ilx_2016_can_generated")
-    self.safety = libpandasafety_py.libpandasafety
-    self.safety.set_safety_hooks(Panda.SAFETY_HONDA_NIDEC, Panda.FLAG_HONDA_NIDEC_ALT)
-    self.safety.init_tests_honda()
-
-  def _acc_state_msg(self, main_on):
-    values = {"MAIN_ON": main_on, "COUNTER": self.cnt_acc_state % 4}
-    self.__class__.cnt_acc_state += 1
-    return self.packer.make_can_msg_panda("SCM_BUTTONS", self.PT_BUS, values)
-
-  def _button_msg(self, buttons, main_on=False):
-    values = {"CRUISE_BUTTONS": buttons, "MAIN_ON": main_on, "COUNTER": self.cnt_button % 4}
-    self.__class__.cnt_button += 1
-    return self.packer.make_can_msg_panda("SCM_BUTTONS", self.PT_BUS, values)
-
-
-class TestHondaBoschSafetyBase(TestHondaSafetyBase):
-  PT_BUS = 1
-  STEER_BUS = 0
-
-  TX_MSGS = [[0xE4, 0], [0xE5, 0], [0x296, 1], [0x33D, 0], [0x33DA, 0], [0x33DB, 0]]
-  FWD_BLACKLISTED_ADDRS = {2: [0xE4, 0xE5, 0x33D, 0x33DA, 0x33DB]}
+class TestHondaBoschSafety(TestHondaSafety):
+  STANDSTILL_THRESHOLD = 0
+  RELAY_MALFUNCTION_ADDR = 0xE4
 
   @classmethod
   def setUpClass(cls):
-    if cls.__name__ == "TestHondaBoschSafetyBase":
+    if cls.__name__ == "TestHondaBoschSafety":
       cls.packer = None
       cls.safety = None
       raise unittest.SkipTest
 
   def setUp(self):
-    self.packer = CANPackerPanda("honda_accord_2018_can_generated")
+    self.packer = CANPackerPanda("honda_accord_s2t_2018_can_generated")
     self.safety = libpandasafety_py.libpandasafety
 
   def _alt_brake_msg(self, brake):
@@ -351,10 +305,18 @@ class TestHondaBoschSafetyBase(TestHondaSafetyBase):
     self.assertTrue(self.safety.get_controls_allowed())
 
 
-class TestHondaBosch(TestHondaBoschSafetyBase):
+class TestHondaBoschHarnessSafety(TestHondaBoschSafety):
+  TX_MSGS = [[0xE4, 0], [0xE5, 0], [0x296, 1], [0x33D, 0]]  # Bosch Harness
+  RELAY_MALFUNCTION_BUS = 0
+  FWD_BLACKLISTED_ADDRS = {2: [0xE4, 0xE5, 0x33D]}
+  FWD_BUS_LOOKUP = {0: 2, 2: 0}
+
+  PT_BUS = 1
+  STEER_BUS = 0
+
   def setUp(self):
     super().setUp()
-    self.safety.set_safety_hooks(Panda.SAFETY_HONDA_BOSCH, 0)
+    self.safety.set_safety_hooks(Panda.SAFETY_HONDA_BOSCH_HARNESS, 0)
     self.safety.init_tests_honda()
 
   def test_spam_cancel_safety_check(self):
@@ -367,19 +329,32 @@ class TestHondaBosch(TestHondaBoschSafetyBase):
     self.assertTrue(self._tx(self._button_msg(Btn.RESUME)))
 
 
-class TestHondaBoschLongSafety(TestHondaBoschSafetyBase):
+class TestHondaBoschGiraffeSafety(TestHondaBoschHarnessSafety):
+  TX_MSGS = [[0xE4, 2], [0xE5, 2], [0x296, 0], [0x33D, 2]]  # Bosch Giraffe
+  RELAY_MALFUNCTION_BUS = 2
+  FWD_BLACKLISTED_ADDRS = {1: [0xE4, 0xE5, 0x33D]}
+  FWD_BUS_LOOKUP = {1: 2, 2: 1}
+
+  PT_BUS = 0
+  STEER_BUS = 2
+
+  def setUp(self):
+    super().setUp()
+    self.safety.set_safety_hooks(Panda.SAFETY_HONDA_BOSCH_GIRAFFE, 0)
+    self.safety.init_tests_honda()
+
+
+class TestHondaBoschLongSafety(TestHondaBoschSafety):
   NO_GAS = -30000
   MAX_GAS = 2000
   MAX_BRAKE = -3.5
 
-  STEER_BUS = 1
-  TX_MSGS = [[0xE4, 1], [0x1DF, 1], [0x1EF, 1], [0x1FA, 1], [0x30C, 1], [0x33D, 1], [0x33DA, 1], [0x33DB, 1], [0x39F, 1], [0x18DAB0F1, 1]]
-  FWD_BLACKLISTED_ADDRS = {2: [0xE4, 0xE5, 0x33D, 0x33DA, 0x33DB]}
-
-  def setUp(self):
-    super().setUp()
-    self.safety.set_safety_hooks(Panda.SAFETY_HONDA_BOSCH, Panda.FLAG_HONDA_BOSCH_LONG)
-    self.safety.init_tests_honda()
+  @classmethod
+  def setUpClass(cls):
+    if cls.__name__ == "TestHondaBoschLongSafety":
+      cls.packer = None
+      cls.safety = None
+      raise unittest.SkipTest
 
   def _send_gas_brake_msg(self, gas, accel):
     values = {
@@ -388,19 +363,6 @@ class TestHondaBoschLongSafety(TestHondaBoschSafetyBase):
       "BRAKE_REQUEST": accel < 0,
     }
     return self.packer.make_can_msg_panda("ACC_CONTROL", self.PT_BUS, values)
-
-  def test_diagnostics(self):
-    tester_present = common.package_can_msg((0x18DAB0F1, 0, b"\x02\x3E\x80\x00\x00\x00\x00\x00", self.PT_BUS))
-    self.assertTrue(self.safety.safety_tx_hook(tester_present))
-
-    not_tester_present = common.package_can_msg((0x18DAB0F1, 0, b"\x03\xAA\xAA\x00\x00\x00\x00\x00", self.PT_BUS))
-    self.assertFalse(self.safety.safety_tx_hook(not_tester_present))
-
-  def test_radar_alive(self):
-    # If the radar knockout failed, make sure the relay malfunction is shown
-    self.assertFalse(self.safety.get_relay_malfunction())
-    self._rx(make_msg(self.PT_BUS, 0x1DF, 8))
-    self.assertTrue(self.safety.get_relay_malfunction())
 
   def test_gas_safety_check(self):
     for controls_allowed in [True, False]:
@@ -412,11 +374,39 @@ class TestHondaBoschLongSafety(TestHondaBoschSafetyBase):
 
   def test_brake_safety_check(self):
     for controls_allowed in [True, False]:
-      for accel in np.arange(0, self.MAX_BRAKE - 1, -0.01):
-        accel = round(accel, 2) # floats might not hit exact boundary conditions without rounding
+      for accel in np.arange(0, self.MAX_BRAKE - 1, -0.1):
         self.safety.set_controls_allowed(controls_allowed)
         send = self.MAX_BRAKE <= accel <= 0 if controls_allowed else accel == 0
         self.assertEqual(send, self._tx(self._send_gas_brake_msg(self.NO_GAS, accel)), (controls_allowed, accel))
+
+class TestHondaBoschLongHarnessSafety(TestHondaBoschLongSafety):
+  TX_MSGS = [[0xE4, 1], [0x1DF, 1], [0x1EF, 1], [0x1FA, 1], [0x30C, 1], [0x33D, 1], [0x39F, 1], [0x18DAB0F1, 1]]  # Bosch Harness w/ gas and brakes
+  RELAY_MALFUNCTION_BUS = 0
+  FWD_BLACKLISTED_ADDRS = {2: [0xE4, 0xE5, 0x33D]}
+  FWD_BUS_LOOKUP = {0: 2, 2: 0}
+
+  PT_BUS = 1
+  STEER_BUS = 1
+
+  def setUp(self):
+    super().setUp()
+    self.safety.set_safety_hooks(Panda.SAFETY_HONDA_BOSCH_HARNESS, 2)
+    self.safety.init_tests_honda()
+
+
+class TestHondaBoschLongGiraffeSafety(TestHondaBoschLongSafety):
+  TX_MSGS = [[0xE4, 0], [0x1DF, 0], [0x1EF, 0], [0x1FA, 0], [0x30C, 0], [0x33D, 0], [0x39F, 0], [0x18DAB0F1, 0]]  # Bosch Giraffe w/ gas and brakes
+  RELAY_MALFUNCTION_BUS = 2
+  FWD_BLACKLISTED_ADDRS = {1: [0xE4, 0xE5, 0x33D]}
+  FWD_BUS_LOOKUP = {1: 2, 2: 1}
+
+  PT_BUS = 0
+  STEER_BUS = 0
+
+  def setUp(self):
+    super().setUp()
+    self.safety.set_safety_hooks(Panda.SAFETY_HONDA_BOSCH_GIRAFFE, 2)
+    self.safety.init_tests_honda()
 
 
 if __name__ == "__main__":

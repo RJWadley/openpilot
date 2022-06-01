@@ -14,9 +14,9 @@ def heartbeat_thread(p):
   while True:
     try:
       p.send_heartbeat()
-      time.sleep(0.5)
+      time.sleep(1)
     except Exception:
-      continue
+      break
 
 # Resend every CAN message that has been received on the same bus, but with the data reversed
 if __name__ == "__main__":

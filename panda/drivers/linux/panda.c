@@ -17,7 +17,6 @@
 #include <linux/module.h>           // Core header for loading LKMs into the kernel
 #include <linux/netdevice.h>
 #include <linux/usb.h>
-#include <linux/version.h>
 
 /* vendor and product id */
 #define PANDA_MODULE_NAME "panda"
@@ -82,8 +81,8 @@ static const struct usb_device_id panda_usb_table[] = {
 MODULE_DEVICE_TABLE(usb, panda_usb_table);
 
 
-// panda:       CAN1 = 0   CAN2 = 1   CAN3 = 2
-const int can_numbering[] = {0,1,2};
+// panda:       CAN1 = 0   CAN2 = 1   CAN3 = 4
+const int can_numbering[] = {0,1,4};
 
 struct panda_inf_priv *
 panda_get_inf_from_bus_id(struct panda_dev_priv *priv_dev, int bus_id){
@@ -284,11 +283,7 @@ static void panda_usb_process_can_rx(struct panda_dev_priv *priv_dev,
   //if (msg->dlc & MCBA_DLC_RTR_MASK)
   //  cf->can_id |= CAN_RTR_FLAG;
 
-#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 11, 0)
   cf->can_dlc = get_can_dlc(msg->bus_dat_len & PANDA_DLC_MASK);
-#else
-  cf->can_dlc = can_cc_dlc2len(msg->bus_dat_len & PANDA_DLC_MASK);
-#endif
 
   memcpy(cf->data, msg->data, cf->can_dlc);
 

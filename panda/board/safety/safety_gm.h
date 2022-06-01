@@ -24,25 +24,25 @@ const CanMsg GM_TX_MSGS[] = {{384, 0, 4}, {1033, 0, 7}, {1034, 0, 7}, {715, 0, 8
                              {0x104c006c, 3, 3}, {0x10400060, 3, 5}};  // gmlan
 
 // TODO: do checksum and counter checks. Add correct timestep, 0.1s for now.
-AddrCheckStruct gm_addr_checks[] = {
-  {.msg = {{388, 0, 8, .expected_timestep = 100000U}, { 0 }, { 0 }}},
-  {.msg = {{842, 0, 5, .expected_timestep = 100000U}, { 0 }, { 0 }}},
-  {.msg = {{481, 0, 7, .expected_timestep = 100000U}, { 0 }, { 0 }}},
-  {.msg = {{241, 0, 6, .expected_timestep = 100000U}, { 0 }, { 0 }}},
-  {.msg = {{452, 0, 8, .expected_timestep = 100000U}, { 0 }, { 0 }}},
+AddrCheckStruct gm_rx_checks[] = {
+  {.msg = {{388, 0, 8, .expected_timestep = 100000U}}},
+  {.msg = {{842, 0, 5, .expected_timestep = 100000U}}},
+  {.msg = {{481, 0, 7, .expected_timestep = 100000U}}},
+  {.msg = {{241, 0, 6, .expected_timestep = 100000U}}},
+  {.msg = {{417, 0, 7, .expected_timestep = 100000U}}},
 };
-#define GM_RX_CHECK_LEN (sizeof(gm_addr_checks) / sizeof(gm_addr_checks[0]))
-addr_checks gm_rx_checks = {gm_addr_checks, GM_RX_CHECK_LEN};
+const int GM_RX_CHECK_LEN = sizeof(gm_rx_checks) / sizeof(gm_rx_checks[0]);
 
-static int gm_rx_hook(CANPacket_t *to_push) {
+static int gm_rx_hook(CAN_FIFOMailBox_TypeDef *to_push) {
 
-  bool valid = addr_safety_check(to_push, &gm_rx_checks, NULL, NULL, NULL);
+  bool valid = addr_safety_check(to_push, gm_rx_checks, GM_RX_CHECK_LEN,
+                                 NULL, NULL, NULL);
 
-  if (valid && (GET_BUS(to_push) == 0U)) {
+  if (valid && (GET_BUS(to_push) == 0)) {
     int addr = GET_ADDR(to_push);
 
     if (addr == 388) {
-      int torque_driver_new = ((GET_BYTE(to_push, 6) & 0x7U) << 8) | GET_BYTE(to_push, 7);
+      int torque_driver_new = ((GET_BYTE(to_push, 6) & 0x7) << 8) | GET_BYTE(to_push, 7);
       torque_driver_new = to_signed(torque_driver_new, 11);
       // update array of samples
       update_sample(&torque_driver, torque_driver_new);
@@ -56,7 +56,7 @@ static int gm_rx_hook(CANPacket_t *to_push) {
 
     // ACC steering wheel buttons
     if (addr == 481) {
-      int button = (GET_BYTE(to_push, 5) & 0x70U) >> 4;
+      int button = (GET_BYTE(to_push, 5) & 0x70) >> 4;
       switch (button) {
         case 2:  // resume
         case 3:  // set
@@ -74,16 +74,16 @@ static int gm_rx_hook(CANPacket_t *to_push) {
     if (addr == 241) {
       // Brake pedal's potentiometer returns near-zero reading
       // even when pedal is not pressed
-      brake_pressed = GET_BYTE(to_push, 1) >= 10U;
+      brake_pressed = GET_BYTE(to_push, 1) >= 10;
     }
 
-    if (addr == 452) {
-      gas_pressed = GET_BYTE(to_push, 5) != 0U;
+    if (addr == 417) {
+      gas_pressed = GET_BYTE(to_push, 6) != 0;
     }
 
     // exit controls on regen paddle
     if (addr == 189) {
-      bool regen = GET_BYTE(to_push, 0) & 0x20U;
+      bool regen = GET_BYTE(to_push, 0) & 0x20;
       if (regen) {
         controls_allowed = 0;
       }
@@ -104,12 +104,16 @@ static int gm_rx_hook(CANPacket_t *to_push) {
 // else
 //     block all commands that produce actuation
 
-static int gm_tx_hook(CANPacket_t *to_send) {
+static int gm_tx_hook(CAN_FIFOMailBox_TypeDef *to_send) {
 
   int tx = 1;
   int addr = GET_ADDR(to_send);
 
   if (!msg_allowed(to_send, GM_TX_MSGS, sizeof(GM_TX_MSGS)/sizeof(GM_TX_MSGS[0]))) {
+    tx = 0;
+  }
+
+  if (relay_malfunction) {
     tx = 0;
   }
 
@@ -139,7 +143,7 @@ static int gm_tx_hook(CANPacket_t *to_send) {
   // LKA STEER: safety check
   if (addr == 384) {
     int desired_torque = ((GET_BYTE(to_send, 0) & 0x7U) << 8) + GET_BYTE(to_send, 1);
-    uint32_t ts = microsecond_timer_get();
+    uint32_t ts = TIM2->CNT;
     bool violation = 0;
     desired_torque = to_signed(desired_torque, 11);
 
@@ -204,17 +208,13 @@ static int gm_tx_hook(CANPacket_t *to_send) {
   return tx;
 }
 
-static const addr_checks* gm_init(int16_t param) {
-  UNUSED(param);
-  controls_allowed = false;
-  relay_malfunction_reset();
-  return &gm_rx_checks;
-}
 
 const safety_hooks gm_hooks = {
-  .init = gm_init,
+  .init = nooutput_init,
   .rx = gm_rx_hook,
   .tx = gm_tx_hook,
   .tx_lin = nooutput_tx_lin_hook,
-  .fwd = default_fwd_hook,
+  .fwd = no_fwd_hook,
+  .addr_check = gm_rx_checks,
+  .addr_check_len = sizeof(gm_rx_checks) / sizeof(gm_rx_checks[0]),
 };

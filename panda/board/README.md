@@ -21,8 +21,7 @@ Programming
 **Panda**
 
 ```
-scons -u # Compile
-./flash.sh # Compile & Flash
+make
 ```
 
 Troubleshooting
@@ -30,7 +29,7 @@ Troubleshooting
 
 If your panda will not flash and is quickly blinking a single Green LED, use:
 ```
-./recover.sh
+make recover
 ```
 
 

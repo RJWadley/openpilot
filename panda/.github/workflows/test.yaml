@@ -12,7 +12,7 @@ env:
 jobs:
   docker_push:
     name: docker push
-    runs-on: ubuntu-20.04
+    runs-on: ubuntu-16.04
     timeout-minutes: 45
     if: github.ref == 'refs/heads/master' && github.event_name != 'pull_request' && github.repository == 'commaai/panda'
     steps:
@@ -28,7 +28,7 @@ jobs:
 
   build:
     name: build
-    runs-on: ubuntu-20.04
+    runs-on: ubuntu-16.04
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v2
@@ -36,26 +36,18 @@ jobs:
         run: eval "$BUILD"
       - name: Test python package installer
         run: $RUN "cd /tmp/openpilot/panda && python setup.py install"
-      - name: Build panda STM image and bootstub
-        run: $RUN "cd /tmp/openpilot/panda && scons"
-      - name: Build pedal STM image and bootstub
-        run: $RUN "cd /tmp/openpilot/panda && PEDAL=1 scons"
-
-  unit_tests:
-    name: unit tests
-    runs-on: ubuntu-20.04
-    timeout-minutes: 45
-    steps:
-      - uses: actions/checkout@v2
-      - name: Build Docker image
-        run: eval "$BUILD"
-      - name: Test pack/unpack for USB protocol
-        run: $RUN "cd /tmp/openpilot/panda/tests/usbprotocol &&
-                   python -m unittest discover ."
+      - name: Build panda STM image
+        run: $RUN "cd /tmp/openpilot/panda/board && make bin"
+      - name: Build panda STM bootstub image
+        run: $RUN "cd /tmp/openpilot/panda/board && make obj/bootstub.panda.bin"
+      - name: Build pedal STM image
+        run: $RUN "cd /tmp/openpilot/panda/board/pedal && make obj/comma.bin"
+      - name: Build pedal STM bootstub image
+        run: $RUN "cd /tmp/openpilot/panda/board/pedal && make obj/bootstub.bin"
 
   safety:
     name: safety
-    runs-on: ubuntu-20.04
+    runs-on: ubuntu-16.04
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v2
@@ -65,26 +57,24 @@ jobs:
         run: |
           $RUN "cd /tmp/openpilot && \
                 scons -c && \
-                scons -j$(nproc) -i opendbc/ cereal/ && \
+                scons -j$(nproc) opendbc/ cereal/ && \
                 cd panda/tests/safety && \
                 ./test.sh"
 
   safety_replay:
     name: safety replay
-    runs-on: ubuntu-20.04
+    runs-on: ubuntu-16.04
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v2
       - name: Build Docker image
         run: eval "$BUILD"
       - name: Run safety replay
-        run: $RUN "cd /tmp/openpilot/panda/tests/safety_replay &&
-                   scons -u --test .. &&
-                   ./test_safety_replay.py"
+        run: $RUN "cd /tmp/openpilot/panda/tests/safety_replay && ./test_safety_replay.py"
 
   misra:
     name: misra c2012
-    runs-on: ubuntu-20.04
+    runs-on: ubuntu-16.04
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v2
@@ -97,17 +87,17 @@ jobs:
       - uses: actions/upload-artifact@v2
         if: always()
         with:
-          name: cppcheck_output
-          path: /tmp/misra/cppcheck_*_output.txt
+          name: cppcheck.txt
+          path: /tmp/misra/cppcheck_output.txt
       - uses: actions/upload-artifact@v2
         if: always()
         with:
-          name: misra_output
-          path: /tmp/misra/misra_*_output.txt
+          name: misra.txt
+          path: /tmp/misra/misra_output.txt
 
   python_linter:
     name: python linter
-    runs-on: ubuntu-20.04
+    runs-on: ubuntu-16.04
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v2
@@ -115,4 +105,4 @@ jobs:
         run: eval "$BUILD"
       - name: Run static analysis
         run: |
-          $RUN "cd /tmp/openpilot/panda && git init && git add -A && pre-commit run --all"
+          $RUN "cd /tmp/openpilot/panda && git init && git add -A && MYPYPATH=/tmp/openpilot pre-commit run --all"

@@ -2,8 +2,21 @@
 #include <stdbool.h>
 #include <stdlib.h>
 
-#include "panda.h"
-#include "can_definitions.h"
+typedef struct
+{
+  uint32_t TIR;  /*!< CAN TX mailbox identifier register */
+  uint32_t TDTR; /*!< CAN mailbox data length control and time stamp register */
+  uint32_t TDLR; /*!< CAN mailbox data low register */
+  uint32_t TDHR; /*!< CAN mailbox data high register */
+} CAN_TxMailBox_TypeDef;
+
+typedef struct
+{
+  uint32_t RIR;  /*!< CAN receive FIFO mailbox identifier register */
+  uint32_t RDTR; /*!< CAN receive FIFO mailbox data length control and time stamp register */
+  uint32_t RDLR; /*!< CAN receive FIFO mailbox data low register */
+  uint32_t RDHR; /*!< CAN receive FIFO mailbox data high register */
+} CAN_FIFOMailBox_TypeDef;
 
 typedef struct
 {
@@ -14,8 +27,7 @@ struct sample_t torque_meas;
 struct sample_t torque_driver;
 
 TIM_TypeDef timer;
-TIM_TypeDef *MICROSECOND_TIMER = &timer;
-uint32_t microsecond_timer_get(void);
+TIM_TypeDef *TIM2 = &timer;
 
 // from board_declarations.h
 #define HW_TYPE_UNKNOWN 0U
@@ -24,7 +36,6 @@ uint32_t microsecond_timer_get(void);
 #define HW_TYPE_BLACK_PANDA 3U
 #define HW_TYPE_PEDAL 4U
 #define HW_TYPE_UNO 5U
-#define HW_TYPE_DOS 6U
 
 #define ALLOW_DEBUG
 
@@ -53,6 +64,15 @@ void fault_occurred(uint32_t fault) {
 void fault_recovered(uint32_t fault) {
 }
 
+// from llcan.h
+#define GET_BUS(msg) (((msg)->RDTR >> 4) & 0xFF)
+#define GET_LEN(msg) ((msg)->RDTR & 0xf)
+#define GET_ADDR(msg) ((((msg)->RIR & 4) != 0) ? ((msg)->RIR >> 3) : ((msg)->RIR >> 21))
+#define GET_BYTE(msg, b) (((int)(b) > 3) ? (((msg)->RDHR >> (8U * ((unsigned int)(b) % 4U))) & 0XFFU) : (((msg)->RDLR >> (8U * (unsigned int)(b))) & 0xFFU))
+#define GET_BYTES_04(msg) ((msg)->RDLR)
+#define GET_BYTES_48(msg) ((msg)->RDHR)
+#define GET_FLAG(value, mask) (((__typeof__(mask))param & mask) == mask)
+
 #define UNUSED(x) (void)(x)
 
 #ifndef PANDA
@@ -61,24 +81,6 @@ void fault_recovered(uint32_t fault) {
 #define NULL ((void*)0)
 #define static
 #include "safety.h"
-
-uint32_t microsecond_timer_get(void) {
-  return MICROSECOND_TIMER->CNT;
-}
-
-void safety_tick_current_rx_checks() {
-  safety_tick(current_rx_checks);
-}
-
-bool addr_checks_valid() {
-  for (int i = 0; i < current_rx_checks->len; i++) {
-    const AddrCheckStruct addr = current_rx_checks->check[i];
-    if (!addr.msg_seen || addr.lagging || !addr.valid_checksum || (addr.wrong_counters >= MAX_WRONG_COUNTERS)) {
-      return false;
-    }
-  }
-  return true;
-}
 
 void set_controls_allowed(bool c){
   controls_allowed = c;
@@ -132,10 +134,6 @@ bool get_vehicle_moving(void){
   return vehicle_moving;
 }
 
-bool get_acc_main_on(void){
-  return acc_main_on;
-}
-
 int get_hw_type(void){
   return hw_type;
 }
@@ -182,9 +180,6 @@ void set_desired_angle_last(int t){
   desired_angle_last = t;
 }
 
-
-// ***** car specific helpers *****
-
 void set_honda_alt_brake_msg(bool c){
   honda_alt_brake_msg = c;
 }
@@ -203,9 +198,7 @@ void set_honda_fwd_brake(bool c){
 
 void init_tests(void){
   // get HW_TYPE from env variable set in test.sh
-  if (getenv("HW_TYPE")) {
-    hw_type = atoi(getenv("HW_TYPE"));
-  }
+  hw_type = atoi(getenv("HW_TYPE"));
   safety_mode_cnt = 2U;  // avoid ignoring relay_malfunction logic
   unsafe_mode = 0;
   set_timer(0);

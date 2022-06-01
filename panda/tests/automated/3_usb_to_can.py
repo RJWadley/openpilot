@@ -20,7 +20,10 @@ def test_can_loopback(p):
   # enable CAN loopback mode
   p.set_can_loopback(True)
 
-  busses = [0, 1, 2]
+  if p.legacy:
+    busses = [0, 1]
+  else:
+    busses = [0, 1, 2]
 
   for bus in busses:
     # set bus 0 speed to 250
@@ -59,9 +62,7 @@ def test_safety_nooutput(p):
   # confirm receive nothing
   time.sleep(0.05)
   r = p.can_recv()
-  # bus 192 is messages blocked by TX safety hook on bus 0
-  assert len([x for x in r if x[3] != 192]) == 0
-  assert len([x for x in r if x[3] == 192]) == 1
+  assert len(r) == 0
 
 @test_all_pandas
 @panda_connect_and_init
@@ -116,7 +117,7 @@ def test_throughput(p):
   # enable CAN loopback mode
   p.set_can_loopback(True)
 
-  for speed in [100, 250, 500, 1000]:
+  for speed in [100, 250, 500, 750, 1000]:
     # set bus 0 speed to speed
     p.set_can_speed_kbps(0, speed)
     time.sleep(0.05)
@@ -134,6 +135,9 @@ def test_throughput(p):
 @panda_type_to_serial
 @panda_connect_and_init
 def test_gmlan(p):
+  if p.legacy:
+    return
+
   # Start heartbeat
   start_heartbeat_thread(p)
 
@@ -165,6 +169,9 @@ def test_gmlan(p):
 @panda_type_to_serial
 @panda_connect_and_init
 def test_gmlan_bad_toggle(p):
+  if p.legacy:
+    return
+
   # Start heartbeat
   start_heartbeat_thread(p)
 
