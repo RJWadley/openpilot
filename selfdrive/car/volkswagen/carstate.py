@@ -22,6 +22,7 @@ class CarState(CarStateBase):
         self.shifter_values = can_define.dv["Getriebe_1"]["Waehlhebelposition__Getriebe_1_"]
       if CP.enableGasInterceptor:
         self.openpilot_enabled = False
+      self.cruiseSpeed = 0
     else:
       can_define = CANDefine(DBC_FILES.mqb)
       self.get_can_parser = self.get_mqb_can_parser
@@ -263,9 +264,9 @@ class CarState(CarStateBase):
 
     # Update ACC setpoint. When the setpoint reads as 255, the driver has not
     # yet established an ACC setpoint, so treat it as zero.
-    ret.cruiseState.speed = pt_cp.vl["Motor_2"]['Soll_Geschwindigkeit_bei_GRA_Be'] * CV.KPH_TO_MS
-    if ret.cruiseState.speed > 70:  # 255 kph in m/s == no current setpoint
-      ret.cruiseState.speed = 0
+    self.cruiseSpeed = pt_cp.vl["Motor_2"]['Soll_Geschwindigkeit_bei_GRA_Be'] * CV.KPH_TO_MS
+    if self.cruiseSpeed:  # 255 kph in m/s == no current setpoint
+      self.cruiseSpeed = 0
 
     # Update control button states for turn signals and ACC controls.
     self.buttonStates["accelCruise"] = bool(pt_cp.vl["GRA_Neu"]["GRA_Up_kurz"]) or bool(pt_cp.vl["GRA_Neu"]["GRA_Up_lang"])
@@ -302,9 +303,13 @@ class CarState(CarStateBase):
     if ret.cruiseState.available and not ret.cruiseState.enabled:
       if self.buttonStates["accelCruise"]:
         self.openpilot_enabled = True
+        if self.cruiseSpeed == 0:
+          self.cruiseSpeed = 35 * CV.MPH_TO_MS
       if self.buttonStates["decelCruise"]:
         self.openpilot_enabled = True
-        ret.cruiseState.speed = 15 * CV.MPH_TO_MS
+        self.cruiseSpeed = max(15 * CV.MPH_TO_MS, self.cruiseSpeed)
+
+    ret.cruiseState.speed = self.cruiseSpeed
 
     return ret
 
