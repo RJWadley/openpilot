@@ -190,6 +190,9 @@ class CarController():
         # A subset of MQBs like to "creep" too aggressively with this implementation.
         self.graButtonStatesToSend = BUTTON_STATES.copy()
         self.graButtonStatesToSend["resumeCruise"] = True
+      elif enabled:
+        self.graButtonStatesToSend = BUTTON_STATES.copy()
+        self.graButtonStatesToSend["cancel"] = True
 
     if CS.graMsgBusCounter != self.graMsgBusCounterPrev:
       self.graMsgBusCounterPrev = CS.graMsgBusCounter
