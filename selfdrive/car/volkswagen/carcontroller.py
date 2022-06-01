@@ -155,7 +155,7 @@ class CarController():
 
       can_sends.append(self.create_hud_control(self.packer_pt, CANBUS.pt, hca_enabled,
                                                             CS.out.steeringPressed, hud_alert, left_lane_visible,
-                                                            right_lane_visible, CS.ldw_stock_values,
+                                                            right_lane_visible,
                                                             left_lane_depart, right_lane_depart))
 
     # **** AWV Controls ***************************************************** #
