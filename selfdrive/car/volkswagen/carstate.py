@@ -258,6 +258,8 @@ class CarState(CarStateBase):
 
 
     self.disengage_on_accelerator = Params().get_bool("DisengageOnAccelerator")
+    print("disengage_on_accelerator", self.disengage_on_accelerator)
+    
     # Check if Gas or Brake pressed and cancel override
     if self.disengage_on_accelerator:
       if self.CP.enableGasInterceptor and ret.brakePressed:
