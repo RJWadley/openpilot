@@ -154,8 +154,9 @@ def create_pq_acc_buttons_control(packer, bus, buttonStatesToSend, CS, idx):
     "GRA_Neu_Zaehler": idx,
     "GRA_Sender": CS.graSenderCoding,
 
-    # this should fault the car, disabling stock cruise control
-    # however, we can still hear the CC stalk, allowing openpilot to engage without issue
+    # these values are invalid, which disables stock cruise control for the rest of the drive
+    # however, we can still "hear" the CC stalk just fine, allowing openpilot to engage without issue
+    # only downside is there will be a large exclamation mark on the dash where stock CC speed would be
     "GRA_Abbrechen": 1,
     "GRA_Hauptschalt": 0,
   }
