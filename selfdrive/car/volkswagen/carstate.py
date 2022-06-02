@@ -262,7 +262,8 @@ class CarState(CarStateBase):
     # Check if Gas or Brake pressed and cancel override
     if self.disengage_on_accelerator:
       if self.CP.enableGasInterceptor and (ret.gasPressed or ret.brakePressed):
-        self.openpilot_enabled = False
+        pass
+        #self.openpilot_enabled = False
     else:
       if self.CP.enableGasInterceptor and ret.brakePressed:
         self.openpilot_enabled = False
