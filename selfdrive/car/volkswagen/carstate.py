@@ -321,6 +321,9 @@ class CarState(CarStateBase):
 
     ret.cruiseState.speed = self.cruiseSpeed
 
+    if self.buttonStates["cancel"]:
+      self.openpilot_enabled = False
+
     return ret
 
   @staticmethod
