@@ -119,6 +119,9 @@ class LateralPlanner():
                         ((sm['carState'].steeringTorque > 0 and self.lane_change_direction == LaneChangeDirection.left) or
                           (sm['carState'].steeringTorque < 0 and self.lane_change_direction == LaneChangeDirection.right))
 
+        #TODO link to settings        
+        torque_applied = True
+
         blindspot_detected = ((sm['carState'].leftBlindspot and self.lane_change_direction == LaneChangeDirection.left) or
                               (sm['carState'].rightBlindspot and self.lane_change_direction == LaneChangeDirection.right))
 
