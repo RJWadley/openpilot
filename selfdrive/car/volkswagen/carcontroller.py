@@ -179,31 +179,34 @@ class CarController():
 
     # FIXME: this entire section is in desperate need of refactoring
 
-    if frame > self.graMsgStartFramePrev + P.GRA_VBP_STEP:
-      if not enabled and CS.out.cruiseState.enabled:
-        # Cancel ACC if it's engaged with OP disengaged.
-        self.graButtonStatesToSend = BUTTON_STATES.copy()
-        self.graButtonStatesToSend["cancel"] = True
-      elif enabled and CS.out.standstill:
-        # Blip the Resume button if we're engaged at standstill.
-        # FIXME: This is a naive implementation, improve with visiond or radar input.
-        # A subset of MQBs like to "creep" too aggressively with this implementation.
-        self.graButtonStatesToSend = BUTTON_STATES.copy()
-        self.graButtonStatesToSend["resumeCruise"] = True
-      elif enabled:
-        self.graButtonStatesToSend = BUTTON_STATES.copy()
-        self.graButtonStatesToSend["cancel"] = True
+    #since my only goal is to disable the stock system, timing is less important
+    self.graButtonStatesToSend = BUTTON_STATES.copy()
+    self.graButtonStatesToSend["cancel"] = True
+    idx = (CS.graMsgBusCounter + 1) % 16
+    can_sends.append(self.create_acc_buttons_control(self.packer_pt, self.ext_can, self.graButtonStatesToSend, CS, idx))
 
-    if CS.graMsgBusCounter != self.graMsgBusCounterPrev:
-      self.graMsgBusCounterPrev = CS.graMsgBusCounter
-      if self.graButtonStatesToSend is not None:
-        if self.graMsgSentCount == 0:
-          self.graMsgStartFramePrev = frame
-        idx = (CS.graMsgBusCounter + 1) % 16
-        can_sends.append(self.create_acc_buttons_control(self.packer_pt, self.ext_can, self.graButtonStatesToSend, CS, idx))
-        self.graMsgSentCount += 1
-        if self.graMsgSentCount >= P.GRA_VBP_COUNT:
-          self.graButtonStatesToSend = None
-          self.graMsgSentCount = 0
+    # if frame > self.graMsgStartFramePrev + P.GRA_VBP_STEP:
+    #   if not enabled and CS.out.cruiseState.enabled:
+    #     # Cancel ACC if it's engaged with OP disengaged.
+    #     self.graButtonStatesToSend = BUTTON_STATES.copy()
+    #     self.graButtonStatesToSend["cancel"] = True
+    #   elif enabled and CS.out.standstill:
+    #     # Blip the Resume button if we're engaged at standstill.
+    #     # FIXME: This is a naive implementation, improve with visiond or radar input.
+    #     # A subset of MQBs like to "creep" too aggressively with this implementation.
+    #     self.graButtonStatesToSend = BUTTON_STATES.copy()
+    #     self.graButtonStatesToSend["resumeCruise"] = True
+
+    # if CS.graMsgBusCounter != self.graMsgBusCounterPrev:
+    #   self.graMsgBusCounterPrev = CS.graMsgBusCounter
+    #   if self.graButtonStatesToSend is not None:
+    #     if self.graMsgSentCount == 0:
+    #       self.graMsgStartFramePrev = frame
+    #     idx = (CS.graMsgBusCounter + 1) % 16
+    #     can_sends.append(self.create_acc_buttons_control(self.packer_pt, self.ext_can, self.graButtonStatesToSend, CS, idx))
+    #     self.graMsgSentCount += 1
+    #     if self.graMsgSentCount >= P.GRA_VBP_COUNT:
+    #       self.graButtonStatesToSend = None
+    #       self.graMsgSentCount = 0
 
     return can_sends
