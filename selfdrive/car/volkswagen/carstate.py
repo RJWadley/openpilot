@@ -310,7 +310,7 @@ class CarState(CarStateBase):
           self.cruiseSpeed = 35 * CV.MPH_TO_MS
       if self.buttonStates["decelCruise"]:
         self.openpilot_enabled = True
-        self.cruiseSpeed = max(15 * CV.MPH_TO_MS, self.cruiseSpeed)
+        self.cruiseSpeed = max(15 * CV.MPH_TO_MS, ret.vEgo)
     if ret.cruiseState.available and ret.cruiseState.enabled:
       if self.buttonStates["accelCruise"]:
         self.openpilot_enabled = True

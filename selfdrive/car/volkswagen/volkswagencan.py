@@ -153,8 +153,11 @@ def create_pq_acc_buttons_control(packer, bus, buttonStatesToSend, CS, idx):
   values = {
     "GRA_Neu_Zaehler": idx,
     "GRA_Sender": CS.graSenderCoding,
-    "GRA_Abbrechen": 0, #1 if (buttonStatesToSend["cancel"] or CS.buttonStates["cancel"]) else 0,
-    "GRA_Hauptschalt": 0 if (buttonStatesToSend["cancel"]) else CS.graHauptschalter,
+
+    # this should should fault the car, disabling stock cruise control
+    # however, we can still hear the CC stalk, allowing openpilot to engage without issue
+    "GRA_Abbrechen": 1,
+    "GRA_Hauptschalt": 1,
   }
 
   dat = packer.make_can_msg("GRA_Neu", bus, values)[2]
