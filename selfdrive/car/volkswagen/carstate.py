@@ -301,7 +301,7 @@ class CarState(CarStateBase):
       self.currentSpeed = ret.vEgo
       self.ABSWorking = pt_cp.vl["Bremse_8"]["BR8_Sta_ADR_BR"]
 
-    #allow engagement below 15mph
+    #track car set speed
     delta = 0.1 * CV.MPH_TO_MS
     if ret.cruiseState.available and not ret.cruiseState.enabled:
       if self.buttonStates["accelCruise"]:
