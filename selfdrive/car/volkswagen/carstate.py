@@ -195,7 +195,7 @@ class CarState(CarStateBase):
       ret.gas = pt_cp.vl["Motor_3"]['Fahrpedal_Rohsignal'] / 100.0
       ret.gasPressed = ret.gas > 0
     else:
-      ret.gas = (cam_cp.vl["GAS_SENSOR"]['INTERCEPTOR_GAS'] + cam_cp.vl["GAS_SENSOR"]['INTERCEPTOR_GAS2']) / 2.
+      ret.gas = (pt_cp.vl["GAS_SENSOR"]['INTERCEPTOR_GAS'] + pt_cp.vl["GAS_SENSOR"]['INTERCEPTOR_GAS2']) / 2.
       ret.gasPressed = ret.gas > 468
       print("GAS: %f" % ret.gas)
 
@@ -493,6 +493,10 @@ class CarState(CarStateBase):
         signals += PqExtraSignals.bsm_radar_signals
         checks += PqExtraSignals.bsm_radar_checks
 
+    if CP.enableGasInterceptor:
+      signals += [("INTERCEPTOR_GAS", "GAS_SENSOR", 0), ("INTERCEPTOR_GAS2", "GAS_SENSOR", 0)]
+      checks += [("GAS_SENSOR", 50)]
+
     return CANParser(DBC_FILES.pq, signals, checks, CANBUS.pt)
 
   @staticmethod
@@ -535,10 +539,6 @@ class CarState(CarStateBase):
       # sig_address, frequency
       #("LDW_1", 20)        # From R242 Driver assistance camera
     ]
-
-    if CP.enableGasInterceptor:
-      signals += [("INTERCEPTOR_GAS", "GAS_SENSOR", 0), ("INTERCEPTOR_GAS2", "GAS_SENSOR", 0)]
-      checks += [("GAS_SENSOR", 50)]
 
     if CP.networkLocation == NetworkLocation.gateway:
       # Extended CAN devices other than the camera are here on CANBUS.cam
