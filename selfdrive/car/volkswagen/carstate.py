@@ -256,14 +256,12 @@ class CarState(CarStateBase):
     if self.CP.enableGasInterceptor and pt_cp.vl["Motor_2"]['GRA_Status'] in [1, 2]:
       self.openpilot_enabled = True
 
-
     self.disengage_on_accelerator = Params().get_bool("DisengageOnAccelerator")
     
     # Check if Gas or Brake pressed and cancel override
     if self.disengage_on_accelerator:
       if self.CP.enableGasInterceptor and (ret.gasPressed or ret.brakePressed):
-        pass
-        #self.openpilot_enabled = False
+        self.openpilot_enabled = False
     else:
       if self.CP.enableGasInterceptor and ret.brakePressed:
         self.openpilot_enabled = False
