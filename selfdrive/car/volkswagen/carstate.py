@@ -197,7 +197,6 @@ class CarState(CarStateBase):
     else:
       ret.gas = (pt_cp.vl["GAS_SENSOR"]['INTERCEPTOR_GAS'] + pt_cp.vl["GAS_SENSOR"]['INTERCEPTOR_GAS2']) / 2.
       ret.gasPressed = ret.gas > 468
-      print("GAS: %f" % ret.gas)
 
     ret.brake = pt_cp.vl["Bremse_5"]["Bremsdruck"] / 250.0  # FIXME: this is pressure in Bar, not sure what OP expects
     ret.brakePressed = bool(pt_cp.vl["Motor_2"]["Bremstestschalter"])
