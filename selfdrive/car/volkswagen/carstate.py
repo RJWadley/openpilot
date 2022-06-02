@@ -4,6 +4,7 @@ from selfdrive.config import Conversions as CV
 from selfdrive.car.interfaces import CarStateBase
 from opendbc.can.parser import CANParser
 from opendbc.can.can_define import CANDefine
+from common.params import Params
 from selfdrive.car.volkswagen.values import PQ_CARS, DBC_FILES, CANBUS, NetworkLocation, TransmissionType, GearShifter, BUTTON_STATES, CarControllerParams
 
 
@@ -11,6 +12,7 @@ class CarState(CarStateBase):
   def __init__(self, CP):
     super().__init__(CP)
     self.buttonStates = BUTTON_STATES.copy()
+    self.overridingAccelerator = False
 
     if CP.carFingerprint in PQ_CARS:
       can_define = CANDefine(DBC_FILES.pq)
@@ -254,9 +256,19 @@ class CarState(CarStateBase):
     if self.CP.enableGasInterceptor and pt_cp.vl["Motor_2"]['GRA_Status'] in [1, 2]:
       self.openpilot_enabled = True
 
+
+    self.disengage_on_accelerator = Params().get_bool("DisengageOnAccelerator")
     # Check if Gas or Brake pressed and cancel override
-    if self.CP.enableGasInterceptor and (ret.gasPressed or ret.brakePressed):
-      self.openpilot_enabled = False
+    if self.disengage_on_accelerator:
+      if self.CP.enableGasInterceptor and ret.brakePressed:
+        self.openpilot_enabled = False
+      if ret.gasPressed:
+        self.overridingAccelerator = True
+      else:
+        self.overridingAccelerator = False
+    else:
+      if self.CP.enableGasInterceptor and (ret.gasPressed or ret.brakePressed):
+        self.openpilot_enabled = False
 
     # Override openpilot enabled if gas interceptor installed
     if self.CP.enableGasInterceptor and self.openpilot_enabled:
