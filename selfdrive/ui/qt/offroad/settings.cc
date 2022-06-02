@@ -73,6 +73,11 @@ TogglesPanel::TogglesPanel(QWidget *parent) : QWidget(parent) {
                                   "In this mode openpilot will ignore lanelines and just drive how it thinks a human would.",
                                   "../assets/offroad/icon_road.png",
                                   this));
+  toggles.append(new ParamControl("DisengageOnAccelerator",
+                                  "Disengage On Accelerator Pedal",
+                                  "When enabled, pressing the accelerator pedal will disengage openpilot.",
+                                  "../assets/offroad/icon_disengage_on_accelerator.svg",
+                                  this));
 
 #ifdef ENABLE_MAPS
   toggles.append(new ParamControl("NavSettingTime24h",
