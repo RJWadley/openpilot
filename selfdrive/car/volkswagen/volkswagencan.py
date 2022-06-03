@@ -125,8 +125,7 @@ def create_pq_pedal_control(packer, bus, apply_gas, idx):
   return packer.make_can_msg("GAS_COMMAND", bus, values)
 
 def create_pq_hud_control(packer, bus, hca_enabled, steering_pressed, hud_alert, left_lane_visible, right_lane_visible,
-                          ldw_lane_warning_left, ldw_lane_warning_right, ldw_side_dlc_tlc, ldw_dlc, ldw_tlc,
-                          standstill, left_lane_depart, right_lane_depart):
+                           ldw_stock_values, left_lane_depart, right_lane_depart):
   if hca_enabled:
     left_lane_hud = 3 if left_lane_depart else 1 + left_lane_visible
     right_lane_hud = 3 if right_lane_depart else 1 + right_lane_visible
