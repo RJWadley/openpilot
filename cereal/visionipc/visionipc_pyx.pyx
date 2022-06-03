@@ -67,11 +67,15 @@ cdef class VisionIpcClient:
 
   @property
   def width(self):
-    return 0 if not self.buf else self.buf.width
+    return None if not self.buf else self.buf.width
 
   @property
   def height(self):
-    return 0 if not self.buf else self.buf.height
+    return None if not self.buf else self.buf.height
+
+  @property
+  def stride(self):
+    return None if not self.buf else self.buf.stride
 
   def recv(self, int timeout_ms=100):
     self.buf = self.client.recv(NULL, timeout_ms)
@@ -84,3 +88,6 @@ cdef class VisionIpcClient:
 
   def connect(self, bool blocking):
     return self.client.connect(blocking)
+
+  def is_connected(self):
+    return self.client.is_connected()

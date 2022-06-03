@@ -1,13 +1,11 @@
 // Safety-relevant steering constants for Volkswagen
 const int VOLKSWAGEN_MAX_STEER = 300;               // 3.0 Nm (EPS side max of 3.0Nm with fault if violated)
-const int VOLKSWAGEN_MAX_RT_DELTA = 188;             // 4 max rate up * 50Hz send rate * 250000 RT interval / 1000000 = 50 ; 50 * 1.5 for safety pad = 75
+const int VOLKSWAGEN_MAX_RT_DELTA = 75;             // 4 max rate up * 50Hz send rate * 250000 RT interval / 1000000 = 50 ; 50 * 1.5 for safety pad = 75
 const uint32_t VOLKSWAGEN_RT_INTERVAL = 250000;     // 250ms between real time checks
-const int VOLKSWAGEN_MAX_RATE_UP = 10;               // 2.0 Nm/s RoC limit (EPS rack has own soft-limit of 5.0 Nm/s)
+const int VOLKSWAGEN_MAX_RATE_UP = 4;               // 2.0 Nm/s RoC limit (EPS rack has own soft-limit of 5.0 Nm/s)
 const int VOLKSWAGEN_MAX_RATE_DOWN = 10;            // 5.0 Nm/s RoC limit (EPS rack has own soft-limit of 5.0 Nm/s)
 const int VOLKSWAGEN_DRIVER_TORQUE_ALLOWANCE = 80;
 const int VOLKSWAGEN_DRIVER_TORQUE_FACTOR = 3;
-const int VOLKSWAGEN_GAS_INTERCEPTOR_THRSLD = 475;
-#define VOLKSWAGEN_GET_INTERCEPTOR(msg) (((GET_BYTE((msg), 0) << 8) + GET_BYTE((msg), 1) + (GET_BYTE((msg), 2) << 8) + GET_BYTE((msg), 3)) / 2) // avg between 2 tracks
 
 // Safety-relevant CAN messages for the Volkswagen MQB platform
 #define MSG_ESP_19      0x0B2   // RX from ABS, for wheel speeds
@@ -21,16 +19,17 @@ const int VOLKSWAGEN_GAS_INTERCEPTOR_THRSLD = 475;
 
 // Transmit of GRA_ACC_01 is allowed on bus 0 and 2 to keep compatibility with gateway and camera integration
 const CanMsg VOLKSWAGEN_MQB_TX_MSGS[] = {{MSG_HCA_01, 0, 8}, {MSG_GRA_ACC_01, 0, 8}, {MSG_GRA_ACC_01, 2, 8}, {MSG_LDW_02, 0, 8}};
-const int VOLKSWAGEN_MQB_TX_MSGS_LEN = sizeof(VOLKSWAGEN_MQB_TX_MSGS) / sizeof(VOLKSWAGEN_MQB_TX_MSGS[0]);
+#define VOLKSWAGEN_MQB_TX_MSGS_LEN (sizeof(VOLKSWAGEN_MQB_TX_MSGS) / sizeof(VOLKSWAGEN_MQB_TX_MSGS[0]))
 
-AddrCheckStruct volkswagen_mqb_rx_checks[] = {
+AddrCheckStruct volkswagen_mqb_addr_checks[] = {
   {.msg = {{MSG_ESP_19, 0, 8, .check_checksum = false, .max_counter = 0U,  .expected_timestep = 10000U}, { 0 }, { 0 }}},
   {.msg = {{MSG_LH_EPS_03, 0, 8, .check_checksum = true,  .max_counter = 15U, .expected_timestep = 10000U}, { 0 }, { 0 }}},
   {.msg = {{MSG_ESP_05, 0, 8, .check_checksum = true,  .max_counter = 15U, .expected_timestep = 20000U}, { 0 }, { 0 }}},
   {.msg = {{MSG_TSK_06, 0, 8, .check_checksum = true,  .max_counter = 15U, .expected_timestep = 20000U}, { 0 }, { 0 }}},
   {.msg = {{MSG_MOTOR_20, 0, 8, .check_checksum = true,  .max_counter = 15U, .expected_timestep = 20000U}, { 0 }, { 0 }}},
 };
-const int VOLKSWAGEN_MQB_RX_CHECKS_LEN = sizeof(volkswagen_mqb_rx_checks) / sizeof(volkswagen_mqb_rx_checks[0]);
+#define VOLKSWAGEN_MQB_ADDR_CHECKS_LEN (sizeof(volkswagen_mqb_addr_checks) / sizeof(volkswagen_mqb_addr_checks[0]))
+addr_checks volkswagen_mqb_rx_checks = {volkswagen_mqb_addr_checks, VOLKSWAGEN_MQB_ADDR_CHECKS_LEN};
 
 // Safety-relevant CAN messages for the Volkswagen PQ35/PQ46/NMS platforms
 #define MSG_LENKHILFE_3 0x0D0   // RX from EPS, for steering angle and driver steering torque
@@ -38,25 +37,21 @@ const int VOLKSWAGEN_MQB_RX_CHECKS_LEN = sizeof(volkswagen_mqb_rx_checks) / size
 #define MSG_MOTOR_2     0x288   // RX from ECU, for CC state and brake switch state
 #define MSG_MOTOR_3     0x380   // RX from ECU, for driver throttle input
 #define MSG_GRA_NEU     0x38A   // TX by OP, ACC control buttons for cancel/resume
-#define MSG_BREMSE_3    0x4A0   // RX from ABS, for wheel speeds
+#define MSG_BREMSE_1    0x1A0   // RX from ABS, for ego speed
 #define MSG_LDW_1       0x5BE   // TX by OP, Lane line recognition and text alerts
-#define MSG_MOB_1       0x284   // TX by OP, Braking Control
-#define MSG_GAS_1       0x200   // TX by OP, Gas Control
-#define MSG_GAS_SENSOR  0x201   // RX by OP, GAS Sensor
-#define MSG_AWV_1       0x366   // TX by OP, ACC LED
-
 
 // Transmit of GRA_Neu is allowed on bus 0 and 2 to keep compatibility with gateway and camera integration
-const CanMsg VOLKSWAGEN_PQ_TX_MSGS[] = {{MSG_HCA_1, 0, 5}, {MSG_GRA_NEU, 0, 4}, {MSG_GRA_NEU, 2, 4}, {MSG_LDW_1, 0, 8}, {MSG_MOB_1, 0, 6}, {MSG_GAS_1, 0, 6}, {MSG_AWV_1, 0, 5}};
-const int VOLKSWAGEN_PQ_TX_MSGS_LEN = sizeof(VOLKSWAGEN_PQ_TX_MSGS) / sizeof(VOLKSWAGEN_PQ_TX_MSGS[0]);
+const CanMsg VOLKSWAGEN_PQ_TX_MSGS[] = {{MSG_HCA_1, 0, 5}, {MSG_GRA_NEU, 0, 4}, {MSG_GRA_NEU, 2, 4}, {MSG_LDW_1, 0, 8}};
+#define VOLKSWAGEN_PQ_TX_MSGS_LEN (sizeof(VOLKSWAGEN_PQ_TX_MSGS) / sizeof(VOLKSWAGEN_PQ_TX_MSGS[0]))
 
-AddrCheckStruct volkswagen_pq_rx_checks[] = {
+AddrCheckStruct volkswagen_pq_addr_checks[] = {
   {.msg = {{MSG_LENKHILFE_3, 0, 6, .check_checksum = true,  .max_counter = 15U, .expected_timestep = 10000U}, { 0 }, { 0 }}},
   {.msg = {{MSG_MOTOR_2, 0, 8, .check_checksum = false, .max_counter = 0U,  .expected_timestep = 20000U}, { 0 }, { 0 }}},
   {.msg = {{MSG_MOTOR_3, 0, 8, .check_checksum = false, .max_counter = 0U,  .expected_timestep = 10000U}, { 0 }, { 0 }}},
-  {.msg = {{MSG_BREMSE_3, 0, 8, .check_checksum = false, .max_counter = 0U,  .expected_timestep = 10000U}, { 0 }, { 0 }}},
+  {.msg = {{MSG_BREMSE_1, 0, 8, .check_checksum = false, .max_counter = 0U,  .expected_timestep = 10000U}, { 0 }, { 0 }}},
 };
-const int VOLKSWAGEN_PQ_RX_CHECKS_LEN = sizeof(volkswagen_pq_rx_checks) / sizeof(volkswagen_pq_rx_checks[0]);
+#define VOLKSWAGEN_PQ_ADDR_CHECKS_LEN (sizeof(volkswagen_pq_addr_checks) / sizeof(volkswagen_pq_addr_checks[0]))
+addr_checks volkswagen_pq_rx_checks = {volkswagen_pq_addr_checks, VOLKSWAGEN_PQ_ADDR_CHECKS_LEN};
 
 int volkswagen_torque_msg = 0;
 int volkswagen_lane_msg = 0;
@@ -124,7 +119,7 @@ static uint8_t volkswagen_pq_compute_checksum(CAN_FIFOMailBox_TypeDef *to_push) 
   return checksum;
 }
 
-static void volkswagen_mqb_init(int16_t param) {
+static const addr_checks* volkswagen_mqb_init(int16_t param) {
   UNUSED(param);
 
   controls_allowed = false;
@@ -132,20 +127,22 @@ static void volkswagen_mqb_init(int16_t param) {
   volkswagen_torque_msg = MSG_HCA_01;
   volkswagen_lane_msg = MSG_LDW_02;
   gen_crc_lookup_table(0x2F, volkswagen_crc8_lut_8h2f);
+  return &volkswagen_mqb_rx_checks;
 }
 
-static void volkswagen_pq_init(int16_t param) {
+static const addr_checks* volkswagen_pq_init(int16_t param) {
   UNUSED(param);
 
   controls_allowed = false;
   relay_malfunction_reset();
   volkswagen_torque_msg = MSG_HCA_1;
   volkswagen_lane_msg = MSG_LDW_1;
+  return &volkswagen_pq_rx_checks;
 }
 
 static int volkswagen_mqb_rx_hook(CAN_FIFOMailBox_TypeDef *to_push) {
 
-  bool valid = addr_safety_check(to_push, volkswagen_mqb_rx_checks, VOLKSWAGEN_MQB_RX_CHECKS_LEN,
+  bool valid = addr_safety_check(to_push, &volkswagen_mqb_rx_checks,
                                  volkswagen_get_checksum, volkswagen_mqb_compute_crc, volkswagen_mqb_get_counter);
 
   if (valid && (GET_BUS(to_push) == 0)) {
@@ -174,11 +171,18 @@ static int volkswagen_mqb_rx_hook(CAN_FIFOMailBox_TypeDef *to_push) {
       update_sample(&torque_driver, torque_driver_new);
     }
 
-    // Update ACC status from drivetrain coordinator for controls-allowed state
+    // Enter controls on rising edge of stock ACC, exit controls if stock ACC disengages
     // Signal: TSK_06.TSK_Status
     if (addr == MSG_TSK_06) {
       int acc_status = (GET_BYTE(to_push, 3) & 0x7);
-      controls_allowed = ((acc_status == 3) || (acc_status == 4) || (acc_status == 5)) ? 1 : 0;
+      int cruise_engaged = ((acc_status == 3) || (acc_status == 4) || (acc_status == 5)) ? 1 : 0;
+      if (cruise_engaged && !cruise_engaged_prev) {
+        controls_allowed = 1;
+      }
+      if (!cruise_engaged) {
+        controls_allowed = 0;
+      }
+      cruise_engaged_prev = cruise_engaged;
     }
 
     // Signal: Motor_20.MO_Fahrpedalrohwert_01
@@ -198,36 +202,18 @@ static int volkswagen_mqb_rx_hook(CAN_FIFOMailBox_TypeDef *to_push) {
 
 static int volkswagen_pq_rx_hook(CAN_FIFOMailBox_TypeDef *to_push) {
 
-  bool valid = addr_safety_check(to_push, volkswagen_pq_rx_checks, VOLKSWAGEN_PQ_RX_CHECKS_LEN,
+  bool valid = addr_safety_check(to_push, &volkswagen_pq_rx_checks,
                                 volkswagen_get_checksum, volkswagen_pq_compute_checksum, volkswagen_pq_get_counter);
-
-  if (valid) {
-    int addr = GET_ADDR(to_push);
-    // Exit controls on rising edge of interceptor gas press
-    if (addr == MSG_GAS_SENSOR) {
-      gas_interceptor_detected = 1;
-      controls_allowed = 1;
-      int gas_interceptor = VOLKSWAGEN_GET_INTERCEPTOR(to_push);
-      if ((gas_interceptor > VOLKSWAGEN_GAS_INTERCEPTOR_THRSLD) &&
-          (gas_interceptor_prev <= VOLKSWAGEN_GAS_INTERCEPTOR_THRSLD)) {
-        controls_allowed = 0;
-      }
-      gas_interceptor_prev = gas_interceptor;
-    }
-  }
 
   if (valid && (GET_BUS(to_push) == 0)) {
     int addr = GET_ADDR(to_push);
 
-    // Update in-motion state by sampling front wheel speeds
-    // Signal: Bremse_3.Radgeschw__VL_4_1 (front left)
-    // Signal: Bremse_3.Radgeschw__VR_4_1 (front right)
-    if (addr == MSG_BREMSE_3) {
-      int wheel_speed_fl = (GET_BYTE(to_push, 0) | (GET_BYTE(to_push, 1) << 8)) >> 1;
-      int wheel_speed_fr = (GET_BYTE(to_push, 2) | (GET_BYTE(to_push, 3) << 8)) >> 1;
-      // Check for average front speed in excess of 0.3m/s, 1.08km/h
-      // DBC speed scale 0.01: 0.3m/s = 108, sum both wheels to compare
-      vehicle_moving = (wheel_speed_fl + wheel_speed_fr) > 216;
+    // Update in-motion state from speed value.
+    // Signal: Bremse_1.Geschwindigkeit_neu__Bremse_1_
+    if (addr == MSG_BREMSE_1) {
+      int speed = ((GET_BYTE(to_push, 2) & 0xFE) >> 1) | (GET_BYTE(to_push, 3) << 7);
+      // DBC speed scale 0.01: 0.3m/s = 108.
+      vehicle_moving = speed > 108;
     }
 
     // Update driver input torque samples
@@ -242,15 +228,22 @@ static int volkswagen_pq_rx_hook(CAN_FIFOMailBox_TypeDef *to_push) {
       update_sample(&torque_driver, torque_driver_new);
     }
 
-    // Update ACC status from ECU for controls-allowed state
+    // Enter controls on rising edge of stock ACC, exit controls if stock ACC disengages
     // Signal: Motor_2.GRA_Status
-    if ((addr == MSG_MOTOR_2)  && !gas_interceptor_detected) {
+    if (addr == MSG_MOTOR_2) {
       int acc_status = (GET_BYTE(to_push, 2) & 0xC0) >> 6;
-      controls_allowed = ((acc_status == 1) || (acc_status == 2)) ? 1 : 0;
+      int cruise_engaged = ((acc_status == 1) || (acc_status == 2)) ? 1 : 0;
+      if (cruise_engaged && !cruise_engaged_prev) {
+        controls_allowed = 1;
+      }
+      if (!cruise_engaged) {
+        controls_allowed = 0;
+      }
+      cruise_engaged_prev = cruise_engaged;
     }
 
     // Signal: Motor_3.Fahrpedal_Rohsignal
-    if ((addr == MSG_MOTOR_3) && !gas_interceptor_detected) {
+    if (addr == MSG_MOTOR_3) {
       gas_pressed = (GET_BYTE(to_push, 2));
     }
 
@@ -308,7 +301,7 @@ static int volkswagen_mqb_tx_hook(CAN_FIFOMailBox_TypeDef *to_send) {
   int addr = GET_ADDR(to_send);
   int tx = 1;
 
-  if (!msg_allowed(to_send, VOLKSWAGEN_MQB_TX_MSGS, VOLKSWAGEN_MQB_TX_MSGS_LEN) || relay_malfunction) {
+  if (!msg_allowed(to_send, VOLKSWAGEN_MQB_TX_MSGS, VOLKSWAGEN_MQB_TX_MSGS_LEN)) {
     tx = 0;
   }
 
@@ -344,7 +337,7 @@ static int volkswagen_pq_tx_hook(CAN_FIFOMailBox_TypeDef *to_send) {
   int addr = GET_ADDR(to_send);
   int tx = 1;
 
-  if (!msg_allowed(to_send, VOLKSWAGEN_PQ_TX_MSGS, VOLKSWAGEN_PQ_TX_MSGS_LEN) || relay_malfunction) {
+  if (!msg_allowed(to_send, VOLKSWAGEN_PQ_TX_MSGS, VOLKSWAGEN_PQ_TX_MSGS_LEN)) {
     tx = 0;
   }
 
@@ -381,27 +374,26 @@ static int volkswagen_fwd_hook(int bus_num, CAN_FIFOMailBox_TypeDef *to_fwd) {
   int addr = GET_ADDR(to_fwd);
   int bus_fwd = -1;
 
-  if (!relay_malfunction) {
-    switch (bus_num) {
-      case 0:
-        // Forward all traffic from the Extended CAN onward
+  switch (bus_num) {
+    case 0:
+      // Forward all traffic from the Extended CAN onward
+      bus_fwd = 2;
+      break;
+    case 2:
+      if ((addr == volkswagen_torque_msg) || (addr == volkswagen_lane_msg)) {
+        // OP takes control of the Heading Control Assist and Lane Departure Warning messages from the camera
         bus_fwd = -1;
-        break;
-      case 2:
-        if ((addr == volkswagen_torque_msg) || (addr == volkswagen_lane_msg)) {
-          // OP takes control of the Heading Control Assist and Lane Departure Warning messages from the camera
-          bus_fwd = -1;
-        } else {
-          // Forward all remaining traffic from Extended CAN devices to J533 gateway
-          bus_fwd = 0;
-        }
-        break;
-      default:
-        // No other buses should be in use; fallback to do-not-forward
-        bus_fwd = -1;
-        break;
-    }
+      } else {
+        // Forward all remaining traffic from Extended CAN devices to J533 gateway
+        bus_fwd = 0;
+      }
+      break;
+    default:
+      // No other buses should be in use; fallback to do-not-forward
+      bus_fwd = -1;
+      break;
   }
+
   return bus_fwd;
 }
 
@@ -412,8 +404,6 @@ const safety_hooks volkswagen_mqb_hooks = {
   .tx = volkswagen_mqb_tx_hook,
   .tx_lin = nooutput_tx_lin_hook,
   .fwd = volkswagen_fwd_hook,
-  .addr_check = volkswagen_mqb_rx_checks,
-  .addr_check_len = sizeof(volkswagen_mqb_rx_checks) / sizeof(volkswagen_mqb_rx_checks[0]),
 };
 
 // Volkswagen PQ35/PQ46/NMS platforms
@@ -423,6 +413,4 @@ const safety_hooks volkswagen_pq_hooks = {
   .tx = volkswagen_pq_tx_hook,
   .tx_lin = nooutput_tx_lin_hook,
   .fwd = volkswagen_fwd_hook,
-  .addr_check = volkswagen_pq_rx_checks,
-  .addr_check_len = sizeof(volkswagen_pq_rx_checks) / sizeof(volkswagen_pq_rx_checks[0]),
 };
