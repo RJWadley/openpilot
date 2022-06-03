@@ -141,7 +141,9 @@ void process_can(uint8_t can_number) {
         CAN->sTxMailBox[0].TDTR = to_send.RDTR;
         CAN->sTxMailBox[0].TIR = to_send.RIR;
 
-        usb_cb_ep3_out_complete();
+        if (can_tx_check_min_slots_free(MAX_CAN_MSGS_PER_BULK_TRANSFER)) {
+          usb_outep3_resume_if_paused();
+        }
       }
     }
 
@@ -171,7 +173,7 @@ void can_rx(uint8_t can_number) {
     to_push.RDTR = (to_push.RDTR & 0xFFFF000F) | (bus_number << 4);
 
     // forwarding (panda only)
-    int bus_fwd_num = safety_fwd_hook(bus_number, &to_push);
+    int bus_fwd_num = (can_forwarding[bus_number] != -1) ? can_forwarding[bus_number] : safety_fwd_hook(bus_number, &to_push);
     if (bus_fwd_num != -1) {
       CAN_FIFOMailBox_TypeDef to_send;
       to_send.RIR = to_push.RIR | 1; // TXRQ
