@@ -170,6 +170,9 @@ struct CarState {
   stockFcw @31 :Bool;
   espDisabled @32 :Bool;
 
+  stopSteering @38 :Bool;
+
+
   # cruise state
   cruiseState @10 :CruiseState;
 
