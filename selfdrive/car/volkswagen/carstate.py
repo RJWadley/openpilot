@@ -239,6 +239,7 @@ class CarState(CarStateBase):
     self.ldw_side_dlc_tlc = None
     self.ldw_dlc = None
     self.ldw_tlc = None
+    self.ldw_stock_values = {}
     # TODO: Consume FCW/AEB data from factory radar, if present
 
     # Update ACC radar status.
