@@ -105,6 +105,11 @@ struct CarEvent @0x9b1657f34caf3ad3 {
     localizerMalfunction @103;
     highCpuUsage @105;
 
+    pqTimebombWarn @106;
+    pqTimebombBypassing @107;
+    pqTimebombBypassed @108;
+    pqTimebombTERMINAL @109;
+
     driverMonitorLowAccDEPRECATED @68;
     radarCanErrorDEPRECATED @15;
     radarCommIssueDEPRECATED @67;
