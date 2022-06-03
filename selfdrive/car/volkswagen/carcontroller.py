@@ -95,8 +95,8 @@ class CarController():
 
       self.apply_steer_last = apply_steer
       idx = (frame / P.HCA_STEP) % 16
-      # can_sends.append(self.create_steering_control(self.packer_pt, CANBUS.pt, apply_steer,
-      #                                                            idx, hcaEnabled))
+      can_sends.append(self.create_steering_control(self.packer_pt, CANBUS.pt, apply_steer,
+                                                                 idx, hcaEnabled))
 
     # **** Braking Controls ************************************************ #
 
@@ -131,8 +131,8 @@ class CarController():
       idx = (frame / P.MOB_STEP) % 16
       self.mobPreEnable = mobPreEnable
       self.mobEnabled = mobEnabled
-      # can_sends.append(
-      #   self.create_braking_control(self.packer_pt, CANBUS.pt, apply_brake, idx, mobEnabled, mobPreEnable, stopping_wish))
+      can_sends.append(
+        self.create_braking_control(self.packer_pt, CANBUS.pt, apply_brake, idx, mobEnabled, mobPreEnable, stopping_wish))
 
     # **** GAS Controls ***************************************************** #
     if (frame % P.GAS_STEP == 0) and CS.CP.enableGasInterceptor:
@@ -140,7 +140,7 @@ class CarController():
       if enabled:
         apply_gas = int(round(interp(actuators.accel, P.GAS_LOOKUP_BP, P.GAS_LOOKUP_V)))
 
-      # can_sends.append(self.create_gas_control(self.packer_pt, CANBUS.pt, apply_gas, frame // 2))
+      can_sends.append(self.create_gas_control(self.packer_pt, CANBUS.pt, apply_gas, frame // 2))
 
     # **** HUD Controls ***************************************************** #
 
@@ -153,10 +153,10 @@ class CarController():
       else:
         hud_alert = MQB_LDW_MESSAGES["none"]
 
-      # can_sends.append(self.create_hud_control(self.packer_pt, CANBUS.pt, hca_enabled,
-      #                                                       CS.out.steeringPressed, hud_alert, left_lane_visible,
-      #                                                       right_lane_visible, CS.ldw_stock_values,
-      #                                                       left_lane_depart, right_lane_depart))
+      can_sends.append(self.create_hud_control(self.packer_pt, CANBUS.pt, hca_enabled,
+                                                            CS.out.steeringPressed, hud_alert, left_lane_visible,
+                                                            right_lane_visible, CS.ldw_stock_values,
+                                                            left_lane_depart, right_lane_depart))
 
     # **** AWV Controls ***************************************************** #
 
@@ -170,8 +170,8 @@ class CarController():
 
       idx = (frame / P.MOB_STEP) % 16
 
-      # can_sends.append(
-      #   self.create_awv_control(self.packer_pt, CANBUS.pt, idx, orange_led, green_led, braking_working))
+      can_sends.append(
+        self.create_awv_control(self.packer_pt, CANBUS.pt, idx, orange_led, green_led, braking_working))
 
     # **** ACC Button Controls ********************************************** #
 
@@ -180,7 +180,7 @@ class CarController():
     self.graButtonStatesToSend = BUTTON_STATES.copy()
     self.graButtonStatesToSend["cancel"] = True
     idx = (CS.graMsgBusCounter + 1) % 16
-    # can_sends.append(self.create_acc_buttons_control(self.packer_pt, self.ext_can, self.graButtonStatesToSend, CS, idx))
+    can_sends.append(self.create_acc_buttons_control(self.packer_pt, self.ext_can, self.graButtonStatesToSend, CS, idx))
 
     # if frame > self.graMsgStartFramePrev + P.GRA_VBP_STEP:
     #   if not enabled and CS.out.cruiseState.enabled:
