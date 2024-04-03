@@ -15,6 +15,8 @@ class CarState(CarStateBase):
     self.esp_hold_confirmation = False
     self.upscale_lead_car_signal = False
     self.eps_stock_values = False
+    self.standstill_control = False
+    self.cruise_enabled_prev = False
 
   def create_button_events(self, pt_cp, buttons):
     button_events = []
@@ -150,6 +152,23 @@ class CarState(CarStateBase):
 
     # Digital instrument clusters expect the ACC HUD lead car distance to be scaled differently
     self.upscale_lead_car_signal = bool(pt_cp.vl["Kombi_03"]["KBI_Variante"])
+
+    # STANDSTILL CONTROL
+    # at stop and engaged and brake pressed
+    enable_standstill_control = ret.cruiseState.standstill and ret.cruiseState.available and ret.brakePressed and self.cruise_enabled_prev
+    self.cruise_enabled_prev = ret.cruiseState.enabled
+
+    # enable when we press the brake while stopped and engaged
+    if enable_standstill_control:
+      self.standstill_control = True
+
+    # then, disable when we: press the brake while moving, press the gas, press any acc button, or cruise reenables, 
+    if ret.cruiseState.enabled or (ret.brakePressed and not ret.standstill) or ret.gasPressed or len(ret.buttonEvents) > 0:
+      self.standstill_control = False
+
+    # if standstill control is on, tell open pilot to stay enabled (but we'll block gas & brake events)
+    if self.standstill_control:
+      ret.cruiseState.enabled = True
 
     return ret
 
