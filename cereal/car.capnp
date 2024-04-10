@@ -163,6 +163,7 @@ struct CarState {
 
   yawRate @22 :Float32;     # best estimate of yaw rate
   standstill @18 :Bool;
+  standstill_control @120 :Bool;
   wheelSpeeds @2 :WheelSpeeds;
 
   # gas pedal, 0.0-1.0
