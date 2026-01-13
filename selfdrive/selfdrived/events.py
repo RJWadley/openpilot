@@ -1027,6 +1027,14 @@ EVENTS: dict[int, dict[str, Alert | AlertCallbackType]] = {
   EventName.audioFeedback: {
     ET.PERMANENT: audio_feedback_alert,
   },
+
+  EventName.vehicleHoldUnavailable: {
+    ET.WARNING: Alert(
+      "Grade Too Steep to Hold",
+      "Car will roll until grade decreases",
+      AlertStatus.userPrompt, AlertSize.mid,
+      Priority.LOW, VisualAlert.none, AudibleAlert.none, 2.),
+  },
 }
 
 

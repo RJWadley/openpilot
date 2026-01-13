@@ -84,6 +84,8 @@ class CarSpecificEvents:
           events.add(EventName.belowEngageSpeed)
         if CC.enabled and CS.vEgo < self.CP.minEnableSpeed:
           events.add(EventName.speedTooLow)
+        if CS.steepGradeHoldWarning:
+          events.add(EventName.vehicleHoldUnavailable)
 
       # TODO: this needs to be implemented generically in carState struct
       # if CC.eps_timer_soft_disable_alert:  # type: ignore[attr-defined]
