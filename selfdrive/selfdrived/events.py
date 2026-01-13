@@ -389,6 +389,20 @@ def invalid_lkas_setting_alert(CP: car.CarParams, CS: car.CarState, sm: messagin
   return NormalPermanentAlert("Invalid LKAS setting", text)
 
 
+def vehicle_hold_unavailable_alert(CP: car.CarParams, CS: car.CarState, sm: messaging.SubMaster, metric: bool, soft_disable_time: int, personality) -> Alert:
+  # calculate grade from device pitch (for debugging/tuning)
+  grade_pct = math.nan
+  if sm.valid['livePose']:
+    # orientationNED is (roll, pitch, yaw) in radians, convert pitch to grade percentage
+    pitch = sm['livePose'].orientationNED.y
+    grade_pct = math.tan(pitch) * 100
+  return Alert(
+    "Grade Too Steep to Hold",
+    f"Grade: {grade_pct:.1f}% - Car will roll",
+    AlertStatus.userPrompt, AlertSize.mid,
+    Priority.LOW, VisualAlert.none, AudibleAlert.none, 2.)
+
+
 
 EVENTS: dict[int, dict[str, Alert | AlertCallbackType]] = {
   # ********** events with no alerts **********
@@ -1029,11 +1043,7 @@ EVENTS: dict[int, dict[str, Alert | AlertCallbackType]] = {
   },
 
   EventName.vehicleHoldUnavailable: {
-    ET.WARNING: Alert(
-      "Grade Too Steep to Hold",
-      "Car will roll until grade decreases",
-      AlertStatus.userPrompt, AlertSize.mid,
-      Priority.LOW, VisualAlert.none, AudibleAlert.none, 2.),
+    ET.WARNING: vehicle_hold_unavailable_alert,
   },
 }
 
