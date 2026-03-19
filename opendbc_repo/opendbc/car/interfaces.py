@@ -25,7 +25,7 @@ ButtonType = structs.CarState.ButtonEvent.Type
 
 V_CRUISE_MAX = 145
 MAX_CTRL_SPEED = (V_CRUISE_MAX + 4) * CV.KPH_TO_MS
-ACCEL_MAX = 2.0
+ACCEL_MAX = 2.5
 ACCEL_MIN = -3.5
 
 TORQUE_PARAMS_PATH = os.path.join(BASEDIR, 'torque_data/params.toml')
@@ -126,9 +126,6 @@ class CarInterfaceBase(ABC, CarInterfaceBaseSP):
 
   @classmethod
   def get_non_essential_params(cls, candidate: str) -> structs.CarParams:
-    """
-    Parameters essential to controlling the car may be incomplete or wrong without FW versions or fingerprints.
-    """
     return cls.get_params(candidate, gen_empty_fingerprint(), list(), False, False, False)
 
   @classmethod
@@ -152,11 +149,9 @@ class CarInterfaceBase(ABC, CarInterfaceBaseSP):
 
     ret = cls._get_params(ret, candidate, fingerprint, car_fw, alpha_long, is_release, docs)
 
-    # Vehicle mass is published curb weight plus assumed payload such as a human driver; notCars have no assumed payload
     if not ret.notCar:
       ret.mass = ret.mass + STD_CARGO_KG
 
-    # Set params dependent on values set by the car interface
     ret.rotationalInertia = scale_rot_inertia(ret.mass, ret.wheelbase)
     ret.tireStiffnessFront, ret.tireStiffnessRear = scale_tire_stiffness(ret.mass, ret.wheelbase, ret.centerToFront, ret.tireStiffnessFactor)
 
@@ -191,7 +186,6 @@ class CarInterfaceBase(ABC, CarInterfaceBaseSP):
 
   @staticmethod
   def _get_longitudinal_tuning_sp(stock_cp: structs.CarParams, ret: structs.CarParamsSP) -> structs.CarParamsSP:
-    """Apply longitudinal tuning specific to the car's brand. """
     carlog.debug(f"Car {stock_cp.carFingerprint} does not have a _get_longitudinal_tuning_sp method, using defaults")
     return ret
 
@@ -205,14 +199,12 @@ class CarInterfaceBase(ABC, CarInterfaceBaseSP):
 
   @staticmethod
   def get_steer_feedforward_default(desired_angle, v_ego):
-    # Proportional to realigning tire momentum: lateral acceleration.
     return desired_angle * (v_ego**2)
 
   def get_steer_feedforward_function(self):
     return self.get_steer_feedforward_default
 
   def torque_from_lateral_accel_linear(self, lateral_acceleration: float, torque_params: structs.CarParams.LateralTorqueTuning) -> float:
-    # The default is a linear relationship between torque and lateral acceleration (accounting for road roll and steering friction)
     return lateral_acceleration / float(torque_params.latAccelFactor)
 
   def torque_from_lateral_accel(self) -> TorqueFromLateralAccelCallbackType:
@@ -224,35 +216,31 @@ class CarInterfaceBase(ABC, CarInterfaceBaseSP):
   def lateral_accel_from_torque(self) -> LateralAccelFromTorqueCallbackType:
     return self.lateral_accel_from_torque_linear
 
-  # returns a set of default params to avoid repetition in car specific params
   @staticmethod
   def get_std_params(candidate: str) -> structs.CarParams:
     ret = structs.CarParams()
     ret.carFingerprint = candidate
 
-    # Car docs fields
     ret.maxLateralAccel = get_torque_params()[candidate]['MAX_LAT_ACCEL_MEASURED']
-    ret.autoResumeSng = True  # describes whether car can resume from a stop automatically
+    ret.autoResumeSng = True
 
-    # standard ALC params
     ret.tireStiffnessFactor = 1.0
     ret.steerControlType = structs.CarParams.SteerControlType.torque
     ret.minSteerSpeed = 0.
     ret.wheelSpeedFactor = 1.0
 
-    ret.pcmCruise = True     # openpilot's state is tied to the PCM's cruise state on most cars
-    ret.minEnableSpeed = -1. # enable is done by stock ACC, so ignore this
-    ret.steerRatioRear = 0.  # no rear steering, at least on the listed cars aboveA
+    ret.pcmCruise = True
+    ret.minEnableSpeed = -1.
+    ret.steerRatioRear = 0.
     ret.openpilotLongitudinalControl = False
     ret.stopAccel = -2.0
-    ret.stoppingDecelRate = 0.8 # brake_travel/s while trying to stop
+    ret.stoppingDecelRate = 0.8
     ret.vEgoStopping = 0.5
     ret.vEgoStarting = 0.5
     ret.longitudinalTuning.kpBP = [0.]
     ret.longitudinalTuning.kpV = [0.]
     ret.longitudinalTuning.kiBP = [0.]
     ret.longitudinalTuning.kiV = [0.]
-    # TODO estimate car specific lag, use .15s for now
     ret.longitudinalActuatorDelay = 0.15
     ret.steerLimitTimer = 1.0
     return ret
@@ -268,12 +256,10 @@ class CarInterfaceBase(ABC, CarInterfaceBaseSP):
     tune.torque.steeringAngleDeadzoneDeg = steering_angle_deadzone_deg
 
   def update(self, can_packets: list[tuple[int, list[CanData]]]) -> tuple[structs.CarState, structs.CarStateSP]:
-    # parse can
     for cp in self.can_parsers.values():
       if cp is not None:
         cp.update(can_packets)
 
-    # get CarState
     ret, ret_sp = self.CS.update(self.can_parsers)
 
     ret.canValid = all(cp.can_valid for cp in self.can_parsers.values())
@@ -284,7 +270,6 @@ class CarInterfaceBase(ABC, CarInterfaceBaseSP):
     else:
       self.v_ego_cluster_seen = True
 
-    # Many cars apply hysteresis to the ego dash speed
     ret.vEgoCluster = apply_hysteresis(ret.vEgoCluster, self.CS.out.vEgoCluster, self.CS.cluster_speed_hyst_gap)
     if abs(ret.vEgo) < self.CS.cluster_min_speed:
       ret.vEgoCluster = 0.0
@@ -294,7 +279,6 @@ class CarInterfaceBase(ABC, CarInterfaceBaseSP):
 
     ret.buttonEnable = self.CS.update_button_enable(ret.buttonEvents)
 
-    # save for next iteration
     self.CS.out = ret
     self.CS.out_sp = ret_sp
 
@@ -317,7 +301,7 @@ class CarStateBase(ABC):
     self.right_blinker_prev = False
     self.low_speed_alert = False
     self.cluster_speed_hyst_gap = 0.0
-    self.cluster_min_speed = 0.0  # min speed before dropping to 0
+    self.cluster_min_speed = 0.0
     self.secoc_key: bytes = b"00" * 16
 
     Q = [[0.0, 0.0], [0.0, 100.0]]
@@ -337,31 +321,23 @@ class CarStateBase(ABC):
     cs.vEgo, cs.aEgo = self.update_speed_kf(cs.vEgoRaw)
 
   def update_speed_kf(self, v_ego_raw):
-    if abs(v_ego_raw - self.v_ego_kf.x[0][0]) > 2.0:  # Prevent large accelerations when car starts at non zero speed
+    if abs(v_ego_raw - self.v_ego_kf.x[0][0]) > 2.0:
       self.v_ego_kf.set_x([[v_ego_raw], [0.0]])
 
     v_ego_x = self.v_ego_kf.update(v_ego_raw)
     return float(v_ego_x[0]), float(v_ego_x[1])
 
   def update_blinker_from_lamp(self, blinker_time: int, left_blinker_lamp: bool, right_blinker_lamp: bool):
-    """Update blinkers from lights. Enable output when light was seen within the last `blinker_time`
-    iterations"""
-    # TODO: Handle case when switching direction. Now both blinkers can be on at the same time
     self.left_blinker_cnt = blinker_time if left_blinker_lamp else max(self.left_blinker_cnt - 1, 0)
     self.right_blinker_cnt = blinker_time if right_blinker_lamp else max(self.right_blinker_cnt - 1, 0)
     return self.left_blinker_cnt > 0, self.right_blinker_cnt > 0
 
   def update_steering_pressed(self, steering_pressed, steering_pressed_min_count):
-    """Applies filtering on steering pressed for noisy driver torque signals."""
     self.steering_pressed_cnt += 1 if steering_pressed else -1
     self.steering_pressed_cnt = int(np.clip(self.steering_pressed_cnt, 0, steering_pressed_min_count * 2 + 1))
     return self.steering_pressed_cnt > steering_pressed_min_count
 
   def update_blinker_from_stalk(self, blinker_time: int, left_blinker_stalk: bool, right_blinker_stalk: bool):
-    """Update blinkers from stalk position. When stalk is seen the blinker will be on for at least blinker_time,
-    or until the stalk is turned off, whichever is longer. If the opposite stalk direction is seen the blinker
-    is forced to the other side. On a rising edge of the stalk the timeout is reset."""
-
     if left_blinker_stalk:
       self.right_blinker_cnt = 0
       if not self.left_blinker_prev:
@@ -383,7 +359,6 @@ class CarStateBase(ABC):
   def update_button_enable(self, buttonEvents: list[structs.CarState.ButtonEvent]):
     if not self.CP.pcmCruise:
       for b in buttonEvents:
-        # Enable OP long on falling edge of enable buttons
         if b.type in (ButtonType.accelCruise, ButtonType.decelCruise) and not b.pressed:
           return True
     return False
@@ -416,13 +391,8 @@ INTERFACE_ATTR_FILE = {
   "FW_VERSIONS": "fingerprints",
 }
 
-# interface-specific helpers
-
 
 def get_interface_attr(attr: str, combine_brands: bool = False, ignore_none: bool = False) -> dict[str | StrEnum, Any]:
-  # read all the folders in opendbc/car and return a dict where:
-  # - keys are all the car models or brand names
-  # - values are attr values from all car folders
   result = {}
   for car_folder in sorted([x[0] for x in os.walk(BASEDIR)]):
     try:

@@ -1,6 +1,5 @@
 from opendbc.car.crc import CRC8H2F
 
-
 def create_steering_control(packer, bus, apply_torque, lkas_enabled):
   values = {
     "HCA_01_Status_HCA": 5 if lkas_enabled else 3,
@@ -88,7 +87,8 @@ def acc_hud_status_value(main_switch_on, acc_faulted, long_active):
   return acc_control_value(main_switch_on, acc_faulted, long_active)
 
 
-def create_acc_accel_control(packer, bus, acc_type, acc_enabled, accel, acc_control, stopping, starting, esp_hold):
+def create_acc_accel_control(packer, bus, acc_type, acc_enabled, accel, acc_control, stopping, starting,
+                             esp_hold, esp_starting_override, esp_stopping_override):
   commands = []
 
   acc_06_values = {
@@ -96,37 +96,49 @@ def create_acc_accel_control(packer, bus, acc_type, acc_enabled, accel, acc_cont
     "ACC_Status_ACC": acc_control,
     "ACC_StartStopp_Info": acc_enabled,
     "ACC_Sollbeschleunigung_02": accel if acc_enabled else 3.01,
-    "ACC_zul_Regelabw_unten": 0.2,  # TODO: dynamic adjustment of comfort-band
-    "ACC_zul_Regelabw_oben": 0.2,  # TODO: dynamic adjustment of comfort-band
-    "ACC_neg_Sollbeschl_Grad_02": 4.0 if acc_enabled else 0,  # TODO: dynamic adjustment of jerk limits
-    "ACC_pos_Sollbeschl_Grad_02": 4.0 if acc_enabled else 0,  # TODO: dynamic adjustment of jerk limits
-    "ACC_Anfahren": starting,
-    "ACC_Anhalten": stopping,
+    "ACC_zul_Regelabw_unten": 0.2,
+    "ACC_zul_Regelabw_oben": 0.2,
+    "ACC_neg_Sollbeschl_Grad_02": 1.0 if acc_enabled else 0,
+    "ACC_pos_Sollbeschl_Grad_02": 4.0 if acc_enabled else 0,
+    "ACC_Anfahren": starting if acc_enabled else False,
+    "ACC_Anhalten": stopping if acc_enabled else False,
   }
   commands.append(packer.make_can_msg("ACC_06", bus, acc_06_values))
 
-  if starting:
+  # acc_07 is forwarded to ESP — apply MQBStandstillManager overrides first
+  acc07_stopping = esp_stopping_override if esp_stopping_override is not None else stopping
+  acc07_starting = esp_starting_override if esp_starting_override is not None else starting
+
+  # HMS (ACC_Anforderung_HMS) derived from effective acc07 values, not raw actuator state.
+  # The flat path sets esp_starting_override=True when hold=0 → HMS=4 (noop release).
+  # Using raw starting/stopping would bypass this and produce HMS=1 whenever OP is in
+  # stopping state — confirmed cause of SRBM accumulation on uphill stops where hold
+  # is never acquired for 200+ consecutive frames.
+  #   0 = keine (none)
+  #   1 = halten (hold request)
+  #   3 = halten_Standby (hold standby — ESP holds, awaiting our command)
+  #   4 = anfahren (start/launch — release hold)
+  if acc07_starting:
     acc_hold_type = 4  # hold release / startup
   elif esp_hold:
     acc_hold_type = 3  # hold standby
-  elif stopping:
+  elif acc07_stopping:
     acc_hold_type = 1  # hold request
   else:
     acc_hold_type = 0
 
   acc_07_values = {
-    "ACC_Anhalteweg": 0.3 if stopping else 20.46,  # Distance to stop (stopping coordinator handles terminal roll-out)
+    "ACC_Anhalteweg": 0.3 if acc07_stopping and acc_enabled else 20.46,
     "ACC_Freilauf_Info": 2 if acc_enabled else 0,
-    "ACC_Folgebeschl": 3.02,  # Not using secondary controller accel unless and until we understand its impact
+    "ACC_Folgebeschl": 3.02,
     "ACC_Sollbeschleunigung_02": accel if acc_enabled else 3.01,
     "ACC_Anforderung_HMS": acc_hold_type,
-    "ACC_Anfahren": starting,
-    "ACC_Anhalten": stopping,
+    "ACC_Anfahren": acc07_starting if acc_enabled else False,
+    "ACC_Anhalten": acc07_stopping if acc_enabled else False,
   }
   commands.append(packer.make_can_msg("ACC_07", bus, acc_07_values))
 
   return commands
-
 
 def create_acc_hud_control(packer, bus, acc_hud_status, set_speed, lead_distance, distance):
   values = {

@@ -31,14 +31,14 @@ class CarInterface(CarInterfaceBase):
       else:
         ret.networkLocation = NetworkLocation.fwdCamera
 
-      ret.dashcamOnly = is_release  # Release support needs HCA timeout fix, safety validation
+      ret.dashcamOnly = is_release
 
     elif ret.flags & VolkswagenFlags.MLB:
       # Set global MLB parameters
       safety_configs = [get_safety_config(structs.CarParams.SafetyModel.volkswagenMlb)]
       ret.enableBsm = 0x30F in fingerprint[0]  # SWA_01
       ret.networkLocation = NetworkLocation.gateway
-      ret.dashcamOnly = is_release  # Release support needs HCA timeout fix, safety validation, revised J533 harness
+      ret.dashcamOnly = is_release
 
     else:
       # Set global MQB parameters
@@ -92,9 +92,10 @@ class CarInterface(CarInterfaceBase):
       ret.steerActuatorDelay = 0.07
 
     ret.pcmCruise = not ret.openpilotLongitudinalControl
-    ret.stopAccel = -0.55
+    ret.stopAccel = -2.0
     ret.vEgoStarting = 0.1
-    ret.vEgoStopping = 0.5
+    ret.vEgoStopping = 0.25
+    ret.longitudinalActuatorDelay = 0.5   # KEY: tells MPC brakes take 0.5s to respond → stops further back
     ret.autoResumeSng = ret.minEnableSpeed == -1
 
     CAN = CanBus(fingerprint=fingerprint)
