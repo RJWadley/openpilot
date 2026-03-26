@@ -118,11 +118,12 @@ class MQBStandstillManager:
         # until departure. Resetting causes repeated REQUESTING→TIMEOUT oscillation
         # on steep declines (confirmed: 3-cycle loop at -14.4% grade).
         self._hold_lost_frames += 1
-        if self._hold_lost_frames >= 100 and CS.out.vEgo < 0.3:
+        if self._hold_lost_frames >= 30:
           self._hold_acquired = False
           self._hold_lost_frames = 0
-          self._hold_request_frames = 0
-          # fall into REQUESTING on next frame
+          self._hold_request_frames = self.HOLD_REQUEST_TIMEOUT
+          # skip REQUESTING, fall directly into TIMEOUT (HMS=4) — prevents SRBM
+          # accumulation when hold was briefly acquired then lost on moderate grades
         else:
           esp_starting_override = True
           esp_stopping_override = False
