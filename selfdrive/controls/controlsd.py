@@ -119,7 +119,7 @@ class Controls:
     should_stop = long_plan.shouldStop
     ignore_cruise_standstill = False
     distance_button_sign = 0
-    if self.CP.carName == "volkswagen" and CC.longActive:
+    if CC.longActive:
       a_target, should_stop, ignore_cruise_standstill, distance_button_sign = \
         self.distance_button_debug.get_long_override(a_target, should_stop)
 
