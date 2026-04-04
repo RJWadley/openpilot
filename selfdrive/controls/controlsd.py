@@ -16,7 +16,7 @@ from openpilot.selfdrive.controls.lib.latcontrol import LatControl
 from openpilot.selfdrive.controls.lib.latcontrol_pid import LatControlPID
 from openpilot.selfdrive.controls.lib.latcontrol_angle import LatControlAngle, STEER_ANGLE_SATURATION_THRESHOLD
 from openpilot.selfdrive.controls.lib.latcontrol_torque import LatControlTorque
-from openpilot.selfdrive.controls.lib.distance_button_debug import DistanceButtonDebug, DISTANCE_BUTTON_DEBUG_ACCEL
+from openpilot.selfdrive.controls.lib.distance_button_debug import DistanceButtonDebug
 from openpilot.selfdrive.controls.lib.longcontrol import LongControl
 from openpilot.selfdrive.modeld.modeld import LAT_SMOOTH_SECONDS
 from openpilot.selfdrive.locationd.helpers import PoseCalibrator, Pose
@@ -118,17 +118,15 @@ class Controls:
     a_target = long_plan.aTarget
     should_stop = long_plan.shouldStop
     ignore_cruise_standstill = False
-    distance_button_sign = 0
+    forced_accel = None
     if CC.longActive:
-      a_target, should_stop, ignore_cruise_standstill, distance_button_sign = \
+      a_target, should_stop, ignore_cruise_standstill, forced_accel = \
         self.distance_button_debug.get_long_override(a_target, should_stop)
 
     actuators.accel = float(self.LoC.update(CC.longActive, CS, a_target, should_stop, pid_accel_limits,
                                             ignore_cruise_standstill))
-    if distance_button_sign > 0:
-      actuators.accel = max(actuators.accel, DISTANCE_BUTTON_DEBUG_ACCEL)
-    elif distance_button_sign < 0:
-      actuators.accel = min(actuators.accel, -DISTANCE_BUTTON_DEBUG_ACCEL)
+    if forced_accel is not None:
+      actuators.accel = max(actuators.accel, forced_accel) if forced_accel > 0.0 else min(actuators.accel, forced_accel)
 
     # Steering PID loop and lateral MPC
     # Reset desired curvature to current to avoid violating the limits on engage

@@ -20,11 +20,11 @@ def test_distance_button_forces_stop_while_moving():
   debug = DistanceButtonDebug()
   debug.update(make_cs(standstill=False, button_events=[make_button_event(True)]))
 
-  a_target, should_stop, ignore_cruise_standstill, sign = debug.get_long_override(0.3, False)
+  a_target, should_stop, ignore_cruise_standstill, forced_accel = debug.get_long_override(0.3, False)
   assert a_target == -DISTANCE_BUTTON_DEBUG_ACCEL
   assert should_stop
   assert not ignore_cruise_standstill
-  assert sign == -1
+  assert forced_accel == -DISTANCE_BUTTON_DEBUG_ACCEL
 
 
 def test_distance_button_forces_start_after_standstill():
@@ -34,11 +34,11 @@ def test_distance_button_forces_start_after_standstill():
 
   debug.update(make_cs(standstill=True, button_events=[make_button_event(True)]))
 
-  a_target, should_stop, ignore_cruise_standstill, sign = debug.get_long_override(-0.3, True)
+  a_target, should_stop, ignore_cruise_standstill, forced_accel = debug.get_long_override(-0.3, True)
   assert a_target == DISTANCE_BUTTON_DEBUG_ACCEL
   assert not should_stop
   assert ignore_cruise_standstill
-  assert sign == 1
+  assert forced_accel == DISTANCE_BUTTON_DEBUG_ACCEL
 
 
 def test_distance_button_override_clears_on_release():
@@ -46,8 +46,8 @@ def test_distance_button_override_clears_on_release():
   debug.update(make_cs(standstill=False, button_events=[make_button_event(True)]))
   debug.update(make_cs(standstill=False, button_events=[make_button_event(False)]))
 
-  a_target, should_stop, ignore_cruise_standstill, sign = debug.get_long_override(0.2, False)
+  a_target, should_stop, ignore_cruise_standstill, forced_accel = debug.get_long_override(0.2, False)
   assert a_target == 0.2
   assert not should_stop
   assert not ignore_cruise_standstill
-  assert sign == 0
+  assert forced_accel is None
