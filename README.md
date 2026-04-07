@@ -2,11 +2,11 @@
 
 | Update | In This Branch | PR | Merged into IQ&nbsp;Pilot | Merged into openpilot |
 |--------|:-------:|-------|:---:|:--:|
-| VW: fix cruise faults silent disable | ✅ | [#37557](https://github.com/commaai/openpilot/pull/37557) | ✅ | ❌ |
+| VW: fix cruise faults silent disable | ✅ | [#37557](https://github.com/commaai/openpilot/pull/37557) | ❌ | ❌ |
 | VW: allow adjusting set speed when disabled | ✅ | [#36758](https://github.com/commaai/openpilot/pull/36758) | ❌ | ❌ |
-| VW MQB: tune stopping procedure (rollback-tuning) | ✅ | [opendbc #3274](https://github.com/commaai/opendbc/pull/3274) | ✅ | ❌ |
+| VW MQB: tune stopping procedure | ✅ | [opendbc #3274](https://github.com/commaai/opendbc/pull/3274) | ❌ | ❌ |
 | VW MQB: infinite standstill without EPB | ✅ | — | ❌ | ❌ |
-| VW: fix rare temporary LKAS fault on startup | ✅ | [opendbc #3268](https://github.com/commaai/opendbc/pull/3268) | ✅ | ❌ |
+| VW: fix rare temporary LKAS fault on startup | ✅ | [opendbc #3268](https://github.com/commaai/opendbc/pull/3268) | ❌ | ❌ |
 | VW MQB: fix temporary "front assist not available" on startup | ✅ | [opendbc #3267](https://github.com/commaai/opendbc/pull/3267) | ❌ | ❌ |
 | safety: allow active accel during gas override | ✅ | [opendbc #3165](https://github.com/commaai/opendbc/pull/3165) | ✅ | ❌ |
 | VW: proper long override (tealtwo) | ✅ | [opendbc #3135](https://github.com/commaai/opendbc/pull/3135) | ✅ | ❌ |
