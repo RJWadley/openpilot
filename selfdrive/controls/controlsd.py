@@ -121,8 +121,10 @@ class Controls:
     ignore_cruise_standstill = False
     forced_accel = None
     if CC.longActive:
-      a_target, should_stop, ignore_cruise_standstill, forced_accel = \
+      a_target, should_stop, ignore_cruise_standstill, forced_accel, forced_max_planned_speed = \
         self.distance_button_debug.get_long_override(a_target, should_stop)
+      if forced_max_planned_speed is not None:
+        actuators.maxPlannedSpeed = forced_max_planned_speed
 
     actuators.accel = float(self.LoC.update(CC.longActive, CS, a_target, should_stop, pid_accel_limits,
                                             ignore_cruise_standstill))

@@ -28,11 +28,11 @@ class DistanceButtonDebug:
       else:
         self.forced_accel = 0.0
 
-  def get_long_override(self, a_target: float, should_stop: bool) -> tuple[float, bool, bool, float | None]:
+  def get_long_override(self, a_target: float, should_stop: bool) -> tuple[float, bool, bool, float | None, float | None]:
     if self.forced_accel == 0.0:
-      return a_target, should_stop, False, None
+      return a_target, should_stop, False, None, None
 
     if self.forced_accel > 0.0:
-      return max(a_target, self.forced_accel), False, True, self.forced_accel
+      return max(a_target, self.forced_accel), False, True, self.forced_accel, 10.0  # override max planned speed so standstill manager allows leaving stop
 
-    return min(a_target, self.forced_accel), True, False, self.forced_accel
+    return min(a_target, self.forced_accel), True, False, self.forced_accel, None
