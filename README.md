@@ -1,3 +1,21 @@
+## Mega Branch Tracking
+
+| Update | In Mega | OP PR | IQP | OP |
+|--------|:-------:|-------|:---:|:--:|
+| VW: fix cruise faults silent disable | ✅ | [#37557](https://github.com/commaai/openpilot/pull/37557) | ❌ | ❌ |
+| VW: allow adjusting set speed when disabled | ✅ | [#36758](https://github.com/commaai/openpilot/pull/36758) | ❌ | ❌ |
+| VW MQB: tune stopping procedure (rollback-tuning) | ✅ | [opendbc #3274](https://github.com/commaai/opendbc/pull/3274) | ❌ | ❌ |
+| VW MQB: fix standstill manager (rollback-tuning) | ✅ | — | ❌ | ❌ |
+| VW: fix rare temporary LKAS fault on startup | ✅ | [opendbc #3268](https://github.com/commaai/opendbc/pull/3268) | ❌ | ❌ |
+| VW MQB: fix temporary "front assist not available" on startup | ✅ | [opendbc #3267](https://github.com/commaai/opendbc/pull/3267) | ❌ | ❌ |
+| Safety: permit positive accel during gas override | ✅ | [opendbc #3165](https://github.com/commaai/opendbc/pull/3165) | ❌ | ❌ |
+| VW: proper long override (tealtwo) | ✅ | [opendbc #3135](https://github.com/commaai/opendbc/pull/3135) | ❌ | ❌ |
+| VW: swap distance value checks for truthiness | ✅ | [opendbc #3072](https://github.com/commaai/opendbc/pull/3072) | ❌ | ❌ |
+| VW: future speed improvements (openpilot + opendbc) | ✅ | — | ❌ | ❌ |
+| Distance button debug helper | ✅ | — | ❌ | ❌ |
+
+---
+
 <div align="center" style="text-align: center;">
 
 <h1>openpilot</h1>
