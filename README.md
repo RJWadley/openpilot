@@ -1,6 +1,6 @@
 ## Mega Branch Tracking
 
-| Update | In Mega | OP PR | IQP | OP |
+| Update | In This Branch | PR | Merged into IQ&nbsp;Pilot | Merged into openpilot |
 |--------|:-------:|-------|:---:|:--:|
 | VW: fix cruise faults silent disable | ✅ | [#37557](https://github.com/commaai/openpilot/pull/37557) | ❌ | ❌ |
 | VW: allow adjusting set speed when disabled | ✅ | [#36758](https://github.com/commaai/openpilot/pull/36758) | ❌ | ❌ |
