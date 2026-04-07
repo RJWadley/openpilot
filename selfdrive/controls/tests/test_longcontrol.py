@@ -54,3 +54,11 @@ def test_starting():
   next_state = long_control_state_trans(CP, active, current_state, v_ego=1.0,
                              should_stop=False, brake_pressed=False, cruise_standstill=False)
   assert next_state == LongCtrlState.pid
+
+
+def test_force_start_ignores_cruise_standstill():
+  CP = car.CarParams.new_message(startingState=True, vEgoStarting=0.5)
+  next_state = long_control_state_trans(CP, True, LongCtrlState.stopping, v_ego=0.0,
+                                        should_stop=False, brake_pressed=False, cruise_standstill=True,
+                                        ignore_cruise_standstill=True)
+  assert next_state == LongCtrlState.starting
