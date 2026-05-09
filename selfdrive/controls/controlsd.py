@@ -16,6 +16,7 @@ from openpilot.selfdrive.controls.lib.latcontrol import LatControl
 from openpilot.selfdrive.controls.lib.latcontrol_pid import LatControlPID
 from openpilot.selfdrive.controls.lib.latcontrol_angle import LatControlAngle, STEER_ANGLE_SATURATION_THRESHOLD
 from openpilot.selfdrive.controls.lib.latcontrol_torque import LatControlTorque
+from openpilot.selfdrive.controls.lib.distance_button_debug import DistanceButtonDebug
 from openpilot.selfdrive.controls.lib.longcontrol import LongControl
 from openpilot.selfdrive.modeld.modeld import LAT_SMOOTH_SECONDS
 from openpilot.selfdrive.locationd.helpers import PoseCalibrator, Pose
@@ -49,6 +50,7 @@ class Controls:
     self.calibrated_pose: Pose | None = None
 
     self.LoC = LongControl(self.CP)
+    self.distance_button_debug = DistanceButtonDebug()
     self.VM = VehicleModel(self.CP)
     self.LaC: LatControl
     if self.CP.steerControlType == car.CarParams.SteerControlType.angle:
@@ -90,6 +92,7 @@ class Controls:
 
     CC = car.CarControl.new_message()
     CC.enabled = self.sm['selfdriveState'].enabled
+    self.distance_button_debug.update(CS)
 
     # Check which actuators can be enabled
     standstill = abs(CS.vEgo) <= max(self.CP.minSteerSpeed, 0.3) or CS.standstill
@@ -113,7 +116,20 @@ class Controls:
 
     # accel PID loop
     pid_accel_limits = self.CI.get_pid_accel_limits(self.CP, CS.vEgo, CS.vCruise * CV.KPH_TO_MS)
-    actuators.accel = float(self.LoC.update(CC.longActive, CS, long_plan.aTarget, long_plan.shouldStop, pid_accel_limits))
+    a_target = long_plan.aTarget
+    should_stop = long_plan.shouldStop
+    ignore_cruise_standstill = False
+    forced_accel = None
+    if CC.longActive:
+      a_target, should_stop, ignore_cruise_standstill, forced_accel, forced_max_planned_speed = \
+        self.distance_button_debug.get_long_override(a_target, should_stop)
+      if forced_max_planned_speed is not None:
+        actuators.maxPlannedSpeed = forced_max_planned_speed
+
+    actuators.accel = float(self.LoC.update(CC.longActive, CS, a_target, should_stop, pid_accel_limits,
+                                            ignore_cruise_standstill))
+    if forced_accel is not None:
+      actuators.accel = max(actuators.accel, forced_accel) if forced_accel > 0.0 else min(actuators.accel, forced_accel)
 
     # Steering PID loop and lateral MPC
     # Reset desired curvature to current to avoid violating the limits on engage
