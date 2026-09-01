@@ -725,6 +725,7 @@ struct ChestnutState {
   pcieLtssm @7 :UInt8;
   supplyVoltage @8 :UInt16;  # mV
   supplyCurrent @9 :Int16;  # mA
+  supplyFault @10 :Bool;
 }
 
 struct RadarState @0x9a185389d6fdd05f {
@@ -2592,6 +2593,7 @@ struct Event {
     clocks @35 :Clocks;
     deviceState @6 :DeviceState;
     chestnutState @152 :ChestnutState;
+    chestnutGpuState @153 :ChestnutState;
     logMessage @18 :Text;
     errorLogMessage @85 :Text;
 
