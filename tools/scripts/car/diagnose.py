@@ -168,6 +168,11 @@ class PandaTransport:
         response, _ = message.recv(timeout=0)
         if response is not None:
           self.responses.append(response.hex())
+          # Delayed replies from an earlier discovery request must not complete
+          # a different service's request. Keep them in the raw evidence.
+          if response and ((response[0] == 0x7F and len(response) >= 2 and response[1] != request[0]) or
+                           (response[0] != 0x7F and response[0] != request[0] + 0x40)):
+            continue
           if response == bytes([0x7F, request[0], 0x78]):
             continue  # Never extend the deadline indefinitely for response-pending.
           return response
@@ -312,20 +317,19 @@ def load_known_targets():
   return {target: sorted(names) for target, names in targets.items()}
 
 
-def generic_targets(bus, obd):
-  addresses = [address for address in range(0x700, 0x7F8) if address != 0x7DF]
+def generic_probes():
+  # Physical request ranges permitted by Panda ELM327; no predicted reply IDs.
+  addresses = [0x24B] + [address for address in range(0x600, 0x800) if address != 0x7DF]
   addresses += [0x18DA00F1 | (node << 8) for node in range(256) if node != 0xF1]
-  return {Target(address, rx_address(address), bus, obd) for address in addresses}
+  return {(address, None) for address in addresses}
 
 
-def selected_targets(args, known_targets, bus, obd):
-  if args.rx_addr is not None:
-    return {Target(args.addr, args.rx_addr, bus, obd, args.subaddress)}
-  targets = {target for target in known_targets if (target.tx, target.bus, target.obd) == (args.addr, bus, obd)
-             and (args.subaddress is None or target.subaddress == args.subaddress)}
-  if args.addr <= 0x7F7 or args.addr > 0x7FF:
-    targets.add(Target(args.addr, rx_address(args.addr), bus, obd, args.subaddress))
-  return targets
+def selected_probes(args, known_targets, bus, obd):
+  probes = {(t.tx, t.subaddress) for t in known_targets if (t.bus, t.obd) == (bus, obd)}
+  if args.addr is None:
+    return generic_probes() | probes
+  return {(args.addr, args.subaddress)} | {(tx, sub) for tx, sub in probes if tx == args.addr and
+                                        (args.subaddress is None or sub == args.subaddress)}
 
 
 def single_frame(payload, subaddress=None):
@@ -343,64 +347,101 @@ def frame_payload(data, subaddress=None):
   return data[1:data[0] + 1]
 
 
-def discover(panda, candidates, bus, obd, deadline, probe_wait=0.15):
-  """Batched single-frame discovery. DTC reads then validate each physical address independently."""
-  by_response = defaultdict(set)
-  probes = {}
-  for target in sorted(candidates, key=target_key):
-    by_response[target.rx].add(target)
-    probes[(target.tx, target.subaddress)] = target
-  found, emissions, evidence = set(), set(), []
-  sent = set()
+def discover(panda, probes, bus, obd, deadline, probe_wait=0.1, timeout=1.0):
+  """Learn physical TX/RX pairs, then corroborate them with a different read service.
 
-  def collect():
-    for address, data, rx_bus in panda.can_recv():
-      if rx_bus != bus:
-        continue
-      payload = frame_payload(data)
-      if payload is not None and len(payload) == 6 and payload[:2] == b"\x41\x00":
-        if 0x7E8 <= address <= 0x7EF:
-          target = Target(address - 8, address, bus, obd)
-        elif address & 0x1FFFFF00 == 0x18DAF100:
-          target = Target(0x18DA00F1 | ((address & 0xFF) << 8), address, bus, obd)
-        else:
-          continue
-        emissions.add(target)
-        found.add(target)
-        evidence.append({**target.as_dict(), "request_address": hex(0x7DF if address <= 0x7FF else 0x18DB33F1),
-                         "request": "0100", "response": payload.hex()})
-      for target in by_response.get(address, ()):
-        if (target.tx, target.subaddress) not in sent:
-          continue
-        payload = frame_payload(data, target.subaddress)
-        if payload == b"\x7e\x00" or (payload is not None and len(payload) == 3 and payload[:2] == b"\x7f\x3e"):
-          found.add(target)
-          evidence.append({**target.as_dict(), "request": "3e00", "response": payload.hex()})
+  Tester-present replies don't echo the request address. Serialize probes, discard
+  queued traffic between requests, and retain failed/ambiguous associations as
+  evidence instead of assigning every reply to a guessed offset.
+  """
+  confirmed, emissions, sent, answered = set(), set(), set(), set()
+  evidence, unconfirmed = [], []
+  wire = PandaTransport(panda, timeout, deadline)
 
-  # Functional OBD discovers all responders; no first-responder-only UdsClient behavior.
-  for address in (0x7DF, 0x18DB33F1):
-    if time.monotonic() >= deadline:
-      break
-    panda.can_send(address, single_frame(b"\x01\x00"), bus, timeout=100)
-  ordered = list(probes.values())
-  for start in range(0, len(ordered), 24):
-    if time.monotonic() >= deadline:
-      break
-    for target in ordered[start:start + 24]:
+  def receive_window():
+    until = min(deadline, time.monotonic() + probe_wait)
+    while True:
+      yield from ((address, data) for address, data, rx_bus in panda.can_recv() if rx_bus == bus and 0 <= address <= 0x1FFFFFFF)
+      if time.monotonic() >= until:
+        break
+      time.sleep(min(0.002, max(0, until - time.monotonic())))
+
+  if probes and time.monotonic() < deadline:
+    panda.can_recv()  # Ignore responses queued before our requests.
+    for address in (0x7DF, 0x18DB33F1):
       if time.monotonic() >= deadline:
         break
-      panda.can_send(target.tx, single_frame(b"\x3e\x00", target.subaddress), bus, timeout=100)
-      sent.add((target.tx, target.subaddress))
-      collect()
-      time.sleep(0.002)
-    until = min(deadline, time.monotonic() + probe_wait)
-    while time.monotonic() < until:
-      collect()
-      time.sleep(0.002)
-  return found, emissions, {"bus": bus, "obd_multiplexing": obd, "probe_count": len(sent), "responses": evidence,
-                             "unanswered": [t.as_dict() for t in sorted(candidates - found, key=target_key)
-                                            if (t.tx, t.subaddress) in sent],
-                             "not_probed": sum((t.tx, t.subaddress) not in sent for t in candidates)}
+      panda.can_send(address, single_frame(b"\x01\x00"), bus, timeout=100)
+    for address, data in receive_window():
+      payload = frame_payload(data)
+      if payload is None or len(payload) != 6 or payload[:2] != b"\x41\x00":
+        continue
+      if 0x7E8 <= address <= 0x7EF:
+        tx = address - 8
+      elif address & 0x1FFFFF00 == 0x18DAF100:
+        tx = 0x18DA00F1 | ((address & 0xFF) << 8)
+      else:
+        continue
+      # Only emissions OBD defines these mappings. Also respect --addr targeting.
+      if (tx, None) in probes:
+        target = Target(tx, address, bus, obd)
+        emissions.add(target)
+        evidence.append({**target.as_dict(), "request_address": hex(0x7DF if address <= 0x7FF else 0x18DB33F1),
+                         "request": "0100", "response": payload.hex(), "outcome": "observed"})
+
+  # Common 0x7xx addresses first so a short budget still covers that range.
+  ordered = sorted(probes, key=lambda p: (not 0x700 <= p[0] <= 0x7FF, p[0], -1 if p[1] is None else p[1]))
+  for tx, subaddress in ordered:
+    if time.monotonic() >= deadline:
+      break
+    panda.can_recv()
+    panda.can_send(tx, single_frame(b"\x3e\x00", subaddress), bus, timeout=100)
+    sent.add((tx, subaddress))
+    candidates = {t for t in emissions if (t.tx, t.subaddress) == (tx, subaddress)}
+    for address, data in receive_window():
+      payload = frame_payload(data, subaddress)
+      if payload == b"\x7e\x00" or (payload is not None and len(payload) == 3 and payload[:2] == b"\x7f\x3e"):
+        target = Target(tx, address, bus, obd, subaddress)
+        if target not in candidates:
+          evidence.append({**target.as_dict(), "request": "3e00", "response": payload.hex(), "outcome": "observed"})
+        candidates.add(target)
+    if candidates:
+      answered.add((tx, subaddress))
+    for target in sorted(candidates, key=target_key):
+      reader = Reader(wire, target)
+      requests = [("obd_confirmation", b"\x01\x00", b"\x41\x00")] if target in emissions else [
+        ("identity_confirmation", b"\x22\xf1\x97", b"\x62\xf1\x97"),
+        ("dtc_confirmation", b"\x19\x02\xff", b"\x59\x02"),
+      ]
+      for name, request, prefix in requests:
+        if time.monotonic() >= deadline:
+          break
+        panda.can_recv()
+        query = reader.read(name, request, prefix)
+        evidence.append({**target.as_dict(), **query})
+        # A correctly correlated rejection also demonstrates a diagnostic endpoint.
+        if query["outcome"] in ("ok", "unsupported", "rejected"):
+          confirmed.add(target)
+          break
+      if target not in confirmed:
+        unconfirmed.append({**target.as_dict(), "reason": "No matching response to a different read service; possibly delayed traffic."})
+    if len(sent) % 128 == 0:
+      print(f"Discovery: {len(sent)}/{len(probes)} addresses probed, {len(confirmed)} reply pairs confirmed…", file=sys.stderr)
+
+  by_request, by_reply = defaultdict(set), defaultdict(set)
+  for target in confirmed:
+    by_request[target.tx, target.subaddress].add(target)
+    by_reply[target.rx, target.subaddress].add(target)
+  ambiguous = {t for t in confirmed if len(by_request[t.tx, t.subaddress]) > 1 or len(by_reply[t.rx, t.subaddress]) > 1}
+  found = confirmed - ambiguous
+  unanswered = sent - answered
+  return found, emissions & found, {"bus": bus, "obd_multiplexing": obd, "method": "sequential_learned",
+                                   "probe_count": len(sent), "responses": evidence,
+                                   "unanswered": [{"tx_address": hex(tx), "subaddress": sub} for tx, sub in ordered
+                                                  if (tx, sub) in unanswered],
+                                   "unconfirmed": unconfirmed,
+                                   "ambiguous": [t.as_dict() for t in sorted(ambiguous, key=target_key)],
+                                   "not_probed": len(probes - sent)}
 
 
 def hardware_preflight(panda):
@@ -421,13 +462,18 @@ def hardware_preflight(panda):
     checks.append({"name": "harness", "status": "pass" if harness in (1, 2) else "fail",
                    "message": "Car harness detected." if harness in (1, 2) else
                    "Car harness not detected. Check the harness box and the OBD-C cable connecting it to the comma."})
-  faults = health.get("faults")
-  checks.append({"name": "panda_health", "status": "pass" if faults == 0 else "fail",
+  # The reported bitmask is telemetry, not the ELM327 transmit gate. In particular,
+  # CAN interrupt-rate faults stay latched after the interrupt rate recovers.
+  # Keep Panda's safety checks and the route-level connectivity checks in charge.
+  faults = health["faults"]
+  checks.append({"name": "panda_health", "status": "pass" if faults == 0 else "warning",
                  "message": "Panda health OK." if faults == 0 else
-                 f"Panda health check failed (faults={faults!r}). Check the connection and restart the device before retrying."})
+                 f"Panda reports fault flags (faults={faults}, {faults:#x}). Continuing read-only diagnostics; flags may be latched. " +
+                 "Actual connection failures and Panda safety restrictions still apply."})
   return {"ready": not any(check["status"] == "fail" for check in checks), "checks": checks,
           "evidence": {"internal_panda": internal, "ignition_line": ignition_line, "ignition_can": ignition_can,
-                       "car_harness_status": harness, "input_voltage_mv": health.get("voltage"), "faults": faults}}
+                       "car_harness_status": harness, "input_voltage_mv": health.get("voltage"), "faults": faults,
+                       "fault_status": health.get("fault_status")}}
 
 
 def check_obd_link(panda, deadline, wait=0.3):
@@ -472,7 +518,7 @@ def check_obd_link(panda, deadline, wait=0.3):
 def scan(panda, args, dataset, known_targets, safety_model):
   started = time.monotonic()
   deadline = started + args.scan_timeout
-  report = {"schema_version": 1, "started_at": datetime.now(UTC).isoformat(), "status": "partial", "setup_error": True,
+  report = {"schema_version": 2, "started_at": datetime.now(UTC).isoformat(), "status": "partial", "setup_error": True,
             "coverage": "best_effort", "vehicle_coverage_complete": False, "ecus": [], "discovery": [], "errors": [], "warnings": [],
             "description_database": {key: dataset[key] for key in ("source", "revision", "license") if key in dataset},
             "scope": "Classic CAN OBD-II and UDS; no K-line, J1850, DoIP, security unlocks, or ECU writes."}
@@ -509,16 +555,18 @@ def scan(panda, args, dataset, known_targets, safety_model):
         if check["status"] == "fail":
           route["outcome"] = "skipped"
           continue
-      if args.addr is not None:
-        found = selected_targets(args, known_targets, bus, obd)
+      if args.rx_addr is not None:
+        found = {Target(args.addr, args.rx_addr, bus, obd, args.subaddress)}
         emissions = found
-        if not found:
-          report["errors"].append(f"No reply address known for {args.addr:#x}; specify --rx-addr")
       else:
-        candidates = generic_targets(bus, obd) | {target for target in known_targets if (target.bus, target.obd) == (bus, obd)}
-        print(f"Discovering ECUs on bus {bus} ({'OBD port' if obd else 'harness'})…", file=sys.stderr)
-        found, emissions, discovery = discover(panda, candidates, bus, obd, deadline)
+        probes = selected_probes(args, known_targets, bus, obd)
+        print(f"Learning ECU reply addresses on bus {bus} ({'OBD port' if obd else 'harness'}; {len(probes)} probes)…", file=sys.stderr)
+        found, emissions, discovery = discover(panda, probes, bus, obd, deadline, args.probe_timeout, args.timeout)
         report["discovery"].append(discovery)
+        if discovery["unconfirmed"] or discovery["ambiguous"]:
+          report["warnings"].append(f"Bus {bus} ({'OBD port' if obd else 'harness'}): " +
+                                    f"{len(discovery['unconfirmed'])} unconfirmed and {len(discovery['ambiguous'])} ambiguous reply pairs " +
+                                    "were not treated as identified ECUs. --json includes their addresses and raw replies.")
       for target in sorted(found, key=target_key):
         if time.monotonic() >= deadline:
           report["ecus"].append({**target.as_dict(), "dtc_read": False, "codes": [], "queries": [], "outcome": "not_queried"})
@@ -597,7 +645,8 @@ def make_parser():
   parser.add_argument("--details", action="store_true", help="read ECU identifiers, UDS raw snapshots/extended records and OBD freeze frame zero")
   parser.add_argument("--max-details", type=int, default=16, help="maximum UDS codes per ECU for detail retrieval (default: 16)")
   parser.add_argument("--timeout", type=positive_seconds, default=1.0, help="absolute per-request timeout, including response-pending (seconds)")
-  parser.add_argument("--scan-timeout", type=positive_seconds, default=120.0, help="total query/discovery budget in seconds")
+  parser.add_argument("--probe-timeout", type=positive_seconds, default=0.1, help="listen window per discovery probe in seconds (default: 0.1)")
+  parser.add_argument("--scan-timeout", type=positive_seconds, default=600.0, help="total query/discovery budget in seconds (default: 600)")
   parser.add_argument("--json", action="store_true", help="emit one JSON report on stdout; progress goes to stderr")
   parser.add_argument("--debug", action="store_true", help="ISO-TP logging to stderr")
   return parser
@@ -646,10 +695,10 @@ def main(argv=None):
     try:
       known_targets = load_known_targets()
       if not known_targets:
-        warnings.append("No brand addresses loaded; using generic addresses only")
+        warnings.append("No brand hints loaded; generic discovery remains available")
     except (ImportError, OSError) as e:
       known_targets = {}
-      warnings.append(f"Brand addressing unavailable; using generic addresses: {e}")
+      warnings.append(f"Brand hints unavailable; using generic discovery: {e}")
     serials = Panda.list()
     if args.serial is None and len(serials) > 1:
       raise RuntimeError(f"Multiple pandas connected; choose --serial from {serials}")
@@ -657,7 +706,7 @@ def main(argv=None):
     panda = Panda(serial=args.serial, cli=False)
     report = scan(panda, args, dataset, known_targets, CarParams.SafetyModel)
   except Exception as e:
-    report = {"schema_version": 1, "status": "failed", "vehicle_coverage_complete": False,
+    report = {"schema_version": 2, "status": "failed", "vehicle_coverage_complete": False,
               "ecus": [], "errors": [f"{type(e).__name__}: {e}"], "setup_error": True}
   finally:
     if panda is not None:

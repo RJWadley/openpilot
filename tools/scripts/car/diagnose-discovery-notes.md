@@ -1,0 +1,21 @@
+# Diagnostic module discovery: standards boundary
+
+Checked: 2026-09-19. Scope: roughly 2016+ openpilot-supported passenger cars; standards research only.
+
+**Conclusion (inference):** The reviewed CAN/UDS/OBD and DoIP sources do not establish a universally available inventory of **all installed diagnostic modules**. Generic discovery can identify reachable responders; completeness needs additional vehicle-specific evidence.
+
+## Verified findings
+
+- **OBD functional broadcast has limited scope.** ISO 15031-5 explicitly covers functionally addressed requests for emissions-related data. For 11-bit CAN OBD, `0x7DF` is the functional request address; replies reveal responders and permit physical follow-up (e.g. `0x7E8` reply → `0x7E0` request). This does not establish coverage of every body, chassis or ADAS module. [ISO 15031-5 scope](https://www.iso.org/standard/66368.html); [ELM327 datasheet, pp. 39–41](https://www.elmelectronics.com/wp-content/uploads/2016/07/ELM327DS.pdf#page=39).
+- **UDS permits silence.** AUTOSAR DCM requires suppression of functional-request negative responses `0x11`, `0x12`, `0x31`, `0x7E`, `0x7F`. Thus an installed ECU can be invisible to a particular probe. UDS defines client/server diagnostic services; ISO's public scope explicitly supplies no implementation requirements. [AUTOSAR R21-11 §7.5.2.3, p. 93, SWS_Dcm_00001](https://www.autosar.org/fileadmin/standards/R21-11/CP/AUTOSAR_SWS_DiagnosticCommunicationManager.pdf#page=93); [ISO 14229-1:2026 scope](https://www.iso.org/standard/87962.html).
+- **`0xF18D` is no inventory loophole.** First-party UDS implementation documentation identifies `supportedFunctionalUnits` as functions/functional units implemented within the queried ECU/server. It does not define a directory of other ECUs or their addresses. Universal support across this vehicle population was not verified. [py-uds DID definitions for ISO 14229-1:2020](https://uds.readthedocs.io/en/latest/pages/knowledge_base/did.html); [uds_protocol enum documentation](https://docs.rs/uds_protocol/latest/uds_protocol/enum.UDSIdentifier.html#variant.SupportedFunctionalUnits).
+- **DoIP discovers vehicles/entities, not every downstream ECU.** ISO distinguishes vehicle discovery from routing to subcomponents. The documented identification response contains VIN, one entity logical address, EID/GID and status information; entity status reports node/gateway type and socket/data limits, with no downstream ECU list. These are discovery features within DoIP, not evidence that every 2016+ car implements DoIP. [ISO 13400-2:2025 scope](https://www.iso.org/standard/13400-2); [doipclient response definitions](https://python-doipclient.readthedocs.io/en/latest/messages.html).
+- **Gateway inventories exist on particular platforms.** Ross-Tech documents automatic installed-module detection and a Gateway Installation List for applicable VW/Audi CAN diagnostic systems. This is evidence for a platform capability, not a universal CAN/UDS service. [Ross-Tech Auto-Scan](https://www.ross-tech.com/vcds/tour/autoscan.php).
+
+## Recommendation and completeness caveat
+
+Local finding supplied by the main inspection: `opendbc_repo/opendbc/car/ecu_addrs.py:get_all_ecu_addrs` already scans candidate address ranges and collects response addresses without a make/module list, but does not recover physical TX/RX pairs.
+
+Adapt that responder-discovery approach and add individually verified request/reply association through bounded, read-only diagnostic probing. Its name is not a completeness guarantee. This can reduce static lists; do not generalize OBD address offsets or discard all manufacturer knowledge. Optional gateway-inventory adapters may remain manufacturer-specific. Report **observed responders**, with unresolved coverage for inaccessible, sleeping, filtered or nonresponding modules. Silence alone cannot establish absence.
+
+This is a bounded engineering inference, not an exhaustive proof across every supported car or standard clause. Full paid ISO texts were not reviewed; F18D semantics were corroborated through first-party implementation documentation, not the 2026 normative table. Current editions do not establish adoption by older vehicles. No scanner behavior was changed and no live vehicle was queried for this research.

@@ -100,6 +100,155 @@ def transport(panda, timeout=0.02):
   return d.PandaTransport(panda, timeout, time.monotonic() + 5)
 
 
+class FakeClock:
+  def __init__(self):
+    self.now = 0.0
+
+  def monotonic(self):
+    return self.now
+
+  def sleep(self, seconds):
+    self.now += seconds
+
+
+class TestDiscovery(unittest.TestCase):
+  def discover(self, panda, probes, wait=0):
+    return d.discover(panda, probes, 1, True, time.monotonic() + 2, probe_wait=wait, timeout=0.005)
+
+  def test_reply_addresses_are_learned_without_brand_metadata(self):
+    targets = {d.Target(0x710, 0x77A), d.Target(0x600, 0x650), d.Target(0x7FA, 0x680),
+               d.Target(0x18DA10F1, 0x18DAF110)}
+    panda = FakePanda({target: {} for target in targets})
+    found, _, report = self.discover(panda, {(t.tx, t.subaddress) for t in targets})
+    self.assertEqual(found, targets)
+    self.assertEqual(report["unanswered"], [])
+    self.assertEqual(report["unconfirmed"], [])
+    self.assertEqual(report["ambiguous"], [])
+    self.assertTrue(all(d.read_request(request) for _, request in panda.requests))
+
+  def test_late_tester_reply_is_not_assigned_to_the_next_address(self):
+    target = d.Target(0x710, 0x77A)
+    panda = FakePanda({target: {}})
+    original_send = panda.can_send
+
+    def send(address, data, bus, timeout=0):
+      original_send(address, data, bus, timeout)
+      if address == 0x711 and d.frame_payload(data) == b"\x3e\x00":
+        panda.queue.append((target.rx, d.single_frame(b"\x7e\x00"), bus))
+
+    with patch.object(panda, "can_send", side_effect=send):
+      found, _, report = self.discover(panda, {(0x710, None), (0x711, None)})
+    self.assertEqual(found, {target})
+    self.assertEqual(report["unconfirmed"][0]["tx_address"], "0x711")
+
+  def test_timed_reply_inside_window_is_learned_outside_window_is_unconfirmed(self):
+    def run(delay):
+      target = d.Target(0x710, 0x77A)
+      panda = FakePanda({target: {}})
+      clock, delayed = FakeClock(), []
+      original_send, original_recv = panda.can_send, panda.can_recv
+
+      def send(address, data, bus, timeout=0):
+        original_send(address, data, bus, timeout)
+        if address == target.tx and d.frame_payload(data) == b"\x3e\x00":
+          delayed.extend((clock.now + delay, msg) for msg in original_recv())
+
+      def recv():
+        ready = [msg for at, msg in delayed if at <= clock.now]
+        delayed[:] = [(at, msg) for at, msg in delayed if at > clock.now]
+        return original_recv() + ready
+
+      with patch.object(d.time, "monotonic", side_effect=clock.monotonic), patch.object(d.time, "sleep", side_effect=clock.sleep), \
+           patch.object(panda, "can_send", side_effect=send), patch.object(panda, "can_recv", side_effect=recv):
+        found, _, report = self.discover(panda, {(0x710, None), (0x711, None)}, wait=0.01)
+      return target, found, report
+
+    for delay, expected_found in ((0.006, True), (0.016, False)):
+      with self.subTest(delay=delay):
+        target, found, report = run(delay)
+        self.assertEqual(found, {target} if expected_found else set())
+        if not expected_found:
+          self.assertEqual(report["unconfirmed"][0]["tx_address"], "0x711")
+
+  def test_multiple_confirmed_replies_are_reported_as_ambiguous(self):
+    targets = {d.Target(0x710, 0x77A), d.Target(0x710, 0x77B)}
+    panda = FakePanda({t: {} for t in targets})
+    found, _, report = self.discover(panda, {(0x710, None)})
+    self.assertEqual(found, set())
+    self.assertEqual({item["rx_address"] for item in report["ambiguous"]}, {"0x77a", "0x77b"})
+
+  def test_shared_reply_address_is_not_counted_as_two_modules(self):
+    targets = {d.Target(0x710, 0x77A), d.Target(0x711, 0x77A)}
+    panda = FakePanda({t: {} for t in targets})
+    found, _, report = self.discover(panda, {(0x710, None), (0x711, None)})
+    self.assertEqual(found, set())
+    self.assertEqual({item["tx_address"] for item in report["ambiguous"]}, {"0x710", "0x711"})
+
+  def test_confirmation_handles_multiframe_identification(self):
+    target = d.Target(0x710, 0x77A)
+    identity = b"\x62\xf1\x97Example module"
+    panda = FakePanda({target: {b"\x22\xf1\x97": identity}})
+    found, _, report = self.discover(panda, {(0x710, None)})
+    self.assertEqual(found, {target})
+    self.assertTrue(any(data[0] == 0x30 for _, data, _ in panda.sent))
+    self.assertTrue(any(identity.hex() in item.get("responses", []) for item in report["responses"]))
+
+  def test_silent_identification_falls_back_to_a_dtc_read(self):
+    target = d.Target(0x710, 0x77A)
+    panda = FakePanda({target: {b"\x22\xf1\x97": None, b"\x19\x02\xff": b"\x59\x02\xff"}})
+    found, _, _ = self.discover(panda, {(0x710, None)})
+    self.assertEqual(found, {target})
+
+  def test_emissions_endpoint_without_tester_present_is_still_discovered(self):
+    target = d.Target(0x7E0, 0x7E8)
+    panda = FakePanda({target: {b"\x01\x00": bytes.fromhex("410000000000"), b"\x3e\x00": None}})
+    found, emissions, report = self.discover(panda, {(target.tx, None)})
+    self.assertEqual(found, {target})
+    self.assertEqual(emissions, {target})
+    self.assertEqual(report["unanswered"], [])
+    self.assertTrue(any(item.get("name") == "obd_confirmation" and item["outcome"] == "ok" for item in report["responses"]))
+
+  def test_stale_echo_and_wrong_bus_frames_do_not_discover_modules(self):
+    panda = FakePanda({})
+    reply = d.single_frame(b"\x7e\x00")
+    panda.queue.append((0x77A, reply, 1))
+    original_send = panda.can_send
+
+    def send(address, data, bus, timeout=0):
+      original_send(address, data, bus, timeout)
+      panda.queue.extend([(0x77A, reply, 0), (0x77A, reply, 129), (0x77A, reply, 193),
+                          (address, data, 1), (0x77A, d.single_frame(b"\x7f\x22\x11"), 1)])
+
+    with patch.object(panda, "can_send", side_effect=send):
+      found, _, report = self.discover(panda, {(0x710, None)})
+    self.assertEqual(found, set())
+    self.assertEqual(report["unconfirmed"], [])
+
+  def test_deadline_prevents_probes_and_reports_remaining_candidates(self):
+    panda = FakePanda({})
+    found, _, report = d.discover(panda, {(0x710, None)}, 1, True, time.monotonic() - 1)
+    self.assertFalse(found)
+    self.assertEqual(panda.sent, [])
+    self.assertEqual(report["not_probed"], 1)
+
+  def test_deadline_stops_during_a_probe_without_starting_confirmation(self):
+    target = d.Target(0x710, 0x77A)
+    panda, clock = FakePanda({target: {}}), FakeClock()
+    with patch.object(d.time, "monotonic", side_effect=clock.monotonic), patch.object(d.time, "sleep", side_effect=clock.sleep):
+      found, _, report = d.discover(panda, {(0x710, None), (0x711, None)}, 1, True, 0.15, probe_wait=0.1)
+    self.assertEqual(found, set())
+    self.assertEqual(report["not_probed"], 1)
+    self.assertEqual(report["unconfirmed"][0]["tx_address"], "0x710")
+    self.assertEqual([address for address, _, _ in panda.sent], [0x7DF, 0x18DB33F1, 0x710])
+    self.assertAlmostEqual(clock.now, 0.15)
+
+  def test_generic_probe_ranges_respect_panda_safety(self):
+    probes = d.generic_probes()
+    self.assertTrue({(0x24B, None), (0x600, None), (0x700, None), (0x7FF, None), (0x18DA10F1, None)} <= probes)
+    self.assertTrue(all(d.valid_tx(tx) for tx, _ in probes))
+    self.assertNotIn((0x7DF, None), probes)
+
+
 class TestDecoding(unittest.TestCase):
   def test_obd_count_and_status(self):
     codes = d.parse_obd_codes(bytes.fromhex("02 0301 c123 0000"), "pending")
@@ -171,12 +320,22 @@ class TestTransport(unittest.TestCase):
 
   def test_negative_and_malformed_responses(self):
     target = d.Target(0x7E0, 0x7E8)
-    for raw, outcome in (("7f0311", "unsupported"), ("7f0333", "rejected"), ("7f1911", "malformed"), ("5902ff", "malformed")):
+    for raw, outcome in (("7f0311", "unsupported"), ("7f0333", "rejected"), ("7f03", "malformed"), ("7f031100", "malformed")):
       with self.subTest(raw=raw):
         panda = FakePanda({target: {b"\x03": bytes.fromhex(raw)}})
         result = d.Reader(transport(panda), target).read("stored", b"\x03", b"\x43")
         self.assertEqual(result["outcome"], outcome)
         self.assertEqual(result["responses"], [raw])
+
+  def test_late_replies_from_other_services_are_ignored_but_retained(self):
+    target = d.Target(0x710, 0x77A)
+    for stale in (b"\x7e\x00", b"\x7f\x3e\x12"):
+      with self.subTest(stale=stale):
+        reply = b"\x62\xf1\x97ECU"
+        panda = FakePanda({target: {b"\x22\xf1\x97": [stale, reply]}})
+        result = d.Reader(transport(panda), target).read("identity", b"\x22\xf1\x97", b"\x62\xf1\x97")
+        self.assertEqual(result["outcome"], "ok")
+        self.assertEqual(result["responses"], [stale.hex(), reply.hex()])
 
   def test_write_requests_rejected_before_transmission(self):
     target = d.Target(0x7E0, 0x7E8)
@@ -189,6 +348,24 @@ class TestTransport(unittest.TestCase):
 
 
 class TestScanning(unittest.TestCase):
+  def test_auto_scan_twenty_nonstandard_pairs_without_brand_metadata(self):
+    targets = {d.Target(0x700 + i, 0x76A + i, obd=False) for i in range(20)}
+    panda = FakePanda({target: {b"\x19\x02\xff": bytes.fromhex("5902ff80011389")} for target in targets})
+    args = d.make_parser().parse_args(["--bus", "1", "--obd", "off"])
+    clock = FakeClock()
+    with patch.object(d.time, "monotonic", side_effect=clock.monotonic), patch.object(d.time, "sleep", side_effect=clock.sleep), \
+         contextlib.redirect_stderr(io.StringIO()):
+      report = d.scan(panda, args, {}, {}, SAFETY)
+    self.assertEqual(len(report["ecus"]), 20)
+    self.assertTrue(all(ecu["dtc_read"] for ecu in report["ecus"]))
+    self.assertTrue(all(not ecu["identity_candidates"] for ecu in report["ecus"]))
+    self.assertEqual(report["discovery"][0]["not_probed"], 0)
+    self.assertFalse(report["vehicle_coverage_complete"])
+    self.assertFalse(report["deadline_reached"])
+    self.assertEqual(panda.safety_modes, [(SAFETY.elm327, 1)])
+    self.assertTrue(all(d.read_request(d.frame_payload(data)) for _, data, _ in panda.sent))
+    json.dumps(report)
+
   def test_discovery_all_functional_responders_and_bus_filter(self):
     engine, transmission = d.Target(0x7E0, 0x7E8), d.Target(0x7E1, 0x7E9)
     extended = d.Target(0x18DA10F1, 0x18DAF110)
@@ -198,7 +375,8 @@ class TestScanning(unittest.TestCase):
     mode01 = {b"\x01\x00": bytes.fromhex("4100be3fa813")}
     panda = FakePanda({engine: mode01, transmission: mode01, extended: mode01, vw: {}, sub: {}, wrong_bus: mode01})
     panda.queue.append((wrong_bus.rx, d.single_frame(bytes.fromhex("4100be3fa813")), 0))
-    found, emissions, report = d.discover(panda, {engine, transmission, extended, vw, sub}, 1, True, time.monotonic() + 1, probe_wait=0)
+    probes = {(t.tx, t.subaddress) for t in (engine, transmission, extended, vw, sub)}
+    found, emissions, report = d.discover(panda, probes, 1, True, time.monotonic() + 1, probe_wait=0)
     self.assertEqual(found, {engine, transmission, extended, vw, sub})
     self.assertEqual(emissions, {engine, transmission, extended})
     self.assertEqual(report["unanswered"], [])
@@ -207,7 +385,7 @@ class TestScanning(unittest.TestCase):
     engine, airbag = d.Target(0x7E0, 0x7E8), d.Target(0x715, 0x77F)
     panda = FakePanda({engine: {b"\x03": bytes.fromhex("43010301"), b"\x01\x00": bytes.fromhex("410000000000")}, airbag: {}})
     args = d.make_parser().parse_args(["--bus", "1", "--obd", "on", "--timeout", "0.02"])
-    with patch.object(d, "generic_targets", return_value={engine, airbag}), contextlib.redirect_stderr(io.StringIO()):
+    with patch.object(d, "generic_probes", return_value={(engine.tx, None), (airbag.tx, None)}), contextlib.redirect_stderr(io.StringIO()):
       report = d.scan(panda, args, {"labels": {"P0301": "Cylinder 1 Misfire Detected"}}, {}, SAFETY)
     self.assertEqual(report["status"], "partial")
     self.assertFalse(report["vehicle_coverage_complete"])
@@ -254,19 +432,39 @@ class TestScanning(unittest.TestCase):
     self.assertEqual(queries["freeze_dtc"]["data"], "P0301")
     self.assertTrue(all(d.read_request(request) for _, request in panda.requests))
 
-  def test_targeting_uses_known_rx_offset(self):
-    target = d.Target(0x715, 0x77F)
-    args = d.make_parser().parse_args(["--addr", "0x715"])
-    self.assertIn(target, d.selected_targets(args, {target: ["volkswagen:srs"]}, 1, True))
-    args.rx_addr = 0x77F
-    self.assertEqual(d.selected_targets(args, {}, 1, True), {target})
+  def test_targeting_learns_an_unknown_reply_offset_without_brand_metadata(self):
+    target = d.Target(0x710, 0x77A, obd=False)
+    panda = FakePanda({target: {b"\x19\x02\xff": bytes.fromhex("5902ff80011389")}})
+    args = d.make_parser().parse_args(["--addr", "0x710", "--obd", "off", "--probe-timeout", "0.001", "--timeout", "0.01"])
+    with contextlib.redirect_stderr(io.StringIO()):
+      report = d.scan(panda, args, {}, {}, SAFETY)
+    self.assertEqual(report["ecus"][0]["rx_address"], "0x77a")
+    self.assertTrue(report["ecus"][0]["dtc_read"])
+    self.assertEqual(report["ecus"][0]["identity_candidates"], [])
+
+  def test_subaddress_hints_are_optional_and_explicit_subaddress_is_respected(self):
+    hint = d.Target(0x750, 0x758, subaddress=0x0F)
+    args = d.make_parser().parse_args(["--addr", "0x750"])
+    self.assertEqual(d.selected_probes(args, {hint: []}, 1, True), {(0x750, None), (0x750, 0x0F)})
+    args.subaddress = 2
+    self.assertEqual(d.selected_probes(args, {hint: []}, 1, True), {(0x750, 2)})
+
+  def test_explicit_rx_bypasses_discovery(self):
+    target = d.Target(0x710, 0x77A, obd=False)
+    panda = FakePanda({target: {b"\x19\x02\xff": b"\x59\x02\xff"}})
+    args = d.make_parser().parse_args(["--addr", "0x710", "--rx-addr", "0x77a", "--obd", "off"])
+    with patch.object(d, "discover", side_effect=AssertionError("discovery must be bypassed")), contextlib.redirect_stderr(io.StringIO()):
+      report = d.scan(panda, args, {}, {}, SAFETY)
+    self.assertEqual(report["status"], "partial")
+    self.assertEqual(report["discovery"], [])
 
   def test_no_response_is_failure_not_no_faults(self):
     args = d.make_parser().parse_args(["--addr", "0x7e0", "--obd", "on", "--timeout", "0.001"])
     with contextlib.redirect_stderr(io.StringIO()):
       report = d.scan(FakePanda({}), args, {}, {}, SAFETY)
     self.assertEqual(report["status"], "failed")
-    self.assertFalse(report["ecus"][0]["dtc_read"])
+    self.assertEqual(report["ecus"], [])
+    self.assertEqual(report["discovery"][0]["unanswered"], [{"tx_address": "0x7e0", "subaddress": None}])
 
   def test_address_range_and_29_bit_mapping(self):
     self.assertEqual(d.rx_address(0x18DA10F1), 0x18DAF110)
@@ -310,11 +508,13 @@ class TestCLI(unittest.TestCase):
     with patch.dict(sys.modules, {"panda": SimpleNamespace(Panda=factory)}), \
          patch.object(d, "check_pandad"), patch.object(d, "load_known_targets", return_value={}), \
          contextlib.redirect_stdout(io.StringIO()) as out, contextlib.redirect_stderr(io.StringIO()):
-      status = d.main(["--addr", "0x7e0", "--obd", "on", "--json", "--timeout", "0.01"])
+      status = d.main(["--addr", "0x7e0", "--obd", "on", "--json", "--timeout", "0.01", "--probe-timeout", "0.001"])
     factory.assert_called_once_with(serial=None, cli=False)
     self.assertEqual(panda.safety_modes[-1], (SAFETY.noOutput, 0))
     self.assertTrue(panda.closed)
-    return status, json.loads(out.getvalue())
+    report = json.loads(out.getvalue())
+    self.assertEqual(report["schema_version"], 2)
+    return status, report
 
   def test_json_output_and_cleanup(self):
     target = d.Target(0x7E0, 0x7E8)
@@ -322,6 +522,33 @@ class TestCLI(unittest.TestCase):
     status, report = self.run_with_panda(panda)
     self.assertEqual(status, 0)
     self.assertEqual(report["ecus"][0]["codes"][0]["code"], "P0301")
+
+  def test_reported_panda_faults_warn_but_do_not_block_diagnostics(self):
+    target = d.Target(0x7E0, 0x7E8)
+    for faults in (8, 1, 9, 1 << 31):
+      with self.subTest(faults=faults):
+        panda = FakePanda({target: {b"\x03": bytes.fromhex("43010301")}})
+        panda.health_data.update(faults=faults, fault_status=1)
+        status, report = self.run_with_panda(panda)
+        self.assertEqual(status, 0)
+        self.assertEqual(report["ecus"][0]["codes"][0]["code"], "P0301")
+        self.assertTrue(report["preflight"]["ready"])
+        self.assertEqual(report["preflight"]["evidence"]["faults"], faults)
+        check = next(c for c in report["preflight"]["checks"] if c["name"] == "panda_health")
+        self.assertEqual(check["status"], "warning")
+        self.assertIn(check["message"], report["warnings"])
+        self.assertFalse(report["errors"])
+        self.assertIn((SAFETY.elm327, 0), panda.safety_modes)
+
+  def test_panda_fault_warning_does_not_bypass_obd_connection_failure(self):
+    panda = FakePanda({})
+    panda.health_data["faults"] = 8
+    panda.obd_disconnected = True
+    status, report = self.run_with_panda(panda)
+    self.assertEqual(status, 1)
+    self.assertEqual(report["routes"][0]["outcome"], "skipped")
+    self.assertEqual(report["routes"][0]["preflight"]["status"], "fail")
+    self.assertEqual(report["ecus"], [])
 
   def test_ignition_off_returns_preflight_error_without_transmitting(self):
     panda = FakePanda({})
@@ -364,9 +591,10 @@ class TestCLI(unittest.TestCase):
     self.assertIn("pandad is running", report["errors"][0])
 
   def test_invalid_numeric_options(self):
-    for value in ("nan", "inf", "0", "-1"):
-      with self.subTest(value=value), contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
-        d.main(["--timeout", value])
+    for option in ("--timeout", "--probe-timeout", "--scan-timeout"):
+      for value in ("nan", "inf", "0", "-1"):
+        with self.subTest(option=option, value=value), contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+          d.main([option, value])
 
   def test_offline_dataset(self):
     data = json.loads(d.DATASET.read_text())
@@ -384,18 +612,18 @@ class TestPreflight(unittest.TestCase):
     self.assertTrue(result["ready"])
     self.assertTrue(result["evidence"]["ignition_can"])
 
-  def test_missing_harness_and_panda_faults_block_scan(self):
-    for field, value, failed_check in (("car_harness_status", 0, "harness"), ("faults", 1, "panda_health")):
-      with self.subTest(field=field):
+  def test_missing_harness_blocks_scan_even_with_panda_fault_warning(self):
+    for faults in (0, 8):
+      with self.subTest(faults=faults):
         panda = FakePanda({})
-        panda.health_data[field] = value
+        panda.health_data.update(car_harness_status=0, faults=faults)
         args = d.make_parser().parse_args([])
         with contextlib.redirect_stderr(io.StringIO()):
           report = d.scan(panda, args, {}, {}, SAFETY)
         self.assertTrue(report["setup_error"])
         self.assertEqual(panda.sent, [])
         self.assertEqual(panda.safety_modes, [])
-        check = next(c for c in report["preflight"]["checks"] if c["name"] == failed_check)
+        check = next(c for c in report["preflight"]["checks"] if c["name"] == "harness")
         self.assertEqual(check["status"], "fail")
 
   def test_external_obd_panda_does_not_require_harness_ignition_signal(self):

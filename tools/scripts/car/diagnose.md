@@ -21,10 +21,18 @@ openpilot normally after the diagnostic session.
 
 Before sending diagnostic requests, the script checks Panda health/firmware
 compatibility, ignition, and (for an internal comma Panda) the car harness.
-Missing ignition, a missing harness, or reported Panda hardware faults stop the
-scan with an actionable setup error. Either the ignition line or CAN ignition
+Missing ignition, a missing harness, or an unreadable/incompatible Panda health
+packet stops the scan with a setup error. Either the ignition line or CAN ignition
 signal is sufficient. An external Panda without an ignition signal produces a
 warning, since a direct OBD connection may not provide that signal.
+
+Reported Panda fault flags produce a warning, not a scan-wide block. They are
+telemetry rather than a diagnostic-permission check: for example, `faults=8`
+records a CAN2 interrupt-rate fault that remains latched after the rate recovers.
+The raw `faults` and `fault_status` remain in the report. A warning does not prove
+the fault is historical or harmless; an underlying problem may still prevent
+communication. Panda's own transmit restrictions remain enforced, and actual
+connection failures are handled by the checks below.
 
 For the bus-1 OBD route, a short connectivity check sends two standard read-only
 OBD probes. Received traffic confirms CAN activity. No traffic together with
@@ -46,6 +54,12 @@ power; some ECUs remain accessible through the camera/gateway harness alone.
 # Standard engine endpoint
 python tools/scripts/car/diagnose.py --addr 0x7e0 --bus 1 --obd on
 
+# Scan only the OBD port (avoids repeating discovery on harness routes)
+python tools/scripts/car/diagnose.py --bus 1 --obd on
+
+# Learn a target's reply address instead of supplying it
+python tools/scripts/car/diagnose.py --addr 0x715 --bus 1 --obd on
+
 # VW airbag: explicit physical request and response addresses
 python tools/scripts/car/diagnose.py --addr 0x715 --rx-addr 0x77f --bus 1
 
@@ -55,18 +69,44 @@ python tools/scripts/car/diagnose.py --addr 0x750 --subaddress 0x0f --bus 0 --ob
 
 Default discovery scans buses 1, 0, and 2, trying both bus-1 OBD multiplexing
 states. `--bus` is repeatable. When targeting, the default bus is 1; known opendbc
-reply mappings and the conventional mapping are tried unless `--rx-addr` is
-given. `--serial` selects one Panda when multiple are connected.
+subaddress hints can add probes, but reply addresses are learned rather than
+guessed. Supplying `--rx-addr` bypasses discovery for that explicit pair.
+`--serial` selects one Panda when multiple are connected.
 
 Discovery combines:
 
 - Functional OBD PID 00 queries, retaining **all** 11-bit and 29-bit responders.
-- Batched UDS tester-present probes in conventional physical address ranges.
-- opendbc's manufacturer address, subaddress, bus, and reply-offset information.
+- Sequential UDS tester-present probes across `0x600`–`0x7ff` (excluding the
+  functional address `0x7df`) and normal-fixed 29-bit `0x18daXXf1` addresses
+  (excluding tester node `0xf1`), plus Panda's permitted `0x24b` exception. These
+  stay within Panda's diagnostic safety restrictions; normal addressing needs no
+  manufacturer module list.
+- Actual reply addresses collected on the selected bus, followed by an independent
+  read request to corroborate each request/reply pair. Identification DID `0xf197`
+  is tried first, with a DTC-read fallback if needed. A valid negative response
+  also confirms an endpoint; it does not mean that fault retrieval is supported.
+  Functional OBD responders use the standardized emissions address mapping and
+  a physical OBD follow-up.
+- Optional opendbc address/subaddress hints, especially for subaddressed ECUs and
+  addresses outside the generic ranges. Explicit `--subaddress` is also supported.
 
-Manufacturer metadata supplies routing candidates, not proof of ECU identity.
-The script does not run the firmware-query sequences in those profiles. Physical
-DTC requests independently test endpoints found during discovery.
+The scanner does **not** assume the general UDS reply address is request + `0x08`
+or request + `0x6a`. It rejects queued/other-bus/echo traffic and corroborates
+candidate pairs with a different read service. Delayed replies that cannot be
+corroborated remain `unconfirmed`. Within a route, multiple reply addresses for
+one request, or one reply address shared by multiple requests, remain `ambiguous`
+and are not counted as separate identified ECUs. Their addresses and raw evidence
+are in JSON. Results across different routes are still retained separately.
+Avoid running any other diagnostic tester simultaneously: UDS replies lack a
+transaction identifier, so this is bounded corroboration, not proof against
+arbitrarily delayed or concurrent traffic.
+
+Manufacturer metadata supplies optional hints and labels, not proof of ECU
+identity or a required module inventory. The script does not run the firmware-query
+sequences in those profiles. It does not enumerate every possible subaddress or
+read a manufacturer's gateway installation list. Sleeping, inaccessible, or
+nonresponding ECUs can still be missed; absence of a reply is not absence of a
+module. See [the discovery research](diagnose-discovery-notes.md).
 
 ## Information returned
 
@@ -93,14 +133,15 @@ code clearing, security unlocking, ECU reset, coding, or arbitrary-command optio
 
 ## JSON and incomplete scans
 
-`--json` emits one report on stdout, with progress/debug output on stderr. Version 1
+`--json` emits one report on stdout, with progress/debug output on stderr. Version 2
 contains:
 
 - `ecus`: physical addresses, route, identity candidates, decoded codes, and every
   attempted request with raw responses and its outcome.
-- `discovery`: probes, discovery evidence, unanswered candidates, and counts of
-  candidates not probed before the deadline. An unanswered candidate is not proof
-  that an ECU exists or is absent.
+- `discovery`: observed replies and confirmation queries, `unanswered` request
+  addresses/subaddresses (no invented reply address), `unconfirmed` candidate
+  pairs, `ambiguous` corroborated pairs, and the count `not_probed` before the
+  deadline. An unanswered candidate is not proof that an ECU exists or is absent.
 - `routes`: finished, incomplete, or unscanned routes.
 - `preflight`: ignition/harness/health checks and measured evidence. An OBD
   route also has its own connectivity `preflight`; an unavailable route is
@@ -121,10 +162,16 @@ agents must inspect the report. Completed ECU results survive a later scan error
 or interruption.
 
 `--timeout` is an absolute per-request limit, including response-pending and
-multi-frame reception (default 1 second). `--scan-timeout` bounds discovery/query
-work (default 120 seconds). `--max-details` limits detailed retrieval to 16 UDS
-codes per ECU by default; omitted details are counted. Increase these explicitly
-for slow ECUs or large reports.
+multi-frame reception (default 1 second). `--probe-timeout` controls the listen
+window per discovery probe (default 0.1 seconds). Increase it for slow replies;
+shorter windows trade coverage for speed. `--scan-timeout` bounds discovery/query
+work (default 600 seconds, increased from 120 for sequential discovery). Expect
+roughly 77 seconds of probe windows per full route, plus confirmations and fault
+reads; scanning all four routes can take several minutes. Progress is printed
+every 128 probes. Use `--bus 1 --obd on` for an OBD-port-only scan.
+`--max-details` limits detailed retrieval to 16 UDS codes per ECU by default;
+omitted details are counted. Increase these limits explicitly for slow ECUs or
+large reports.
 
 ## Coverage
 
