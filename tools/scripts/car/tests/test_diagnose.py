@@ -25,9 +25,26 @@ class FakePanda:
     self.obd = True
     self.safety_modes = []
     self.closed = False
+    self.internal = True
+    self.health_data = {"ignition_line": True, "ignition_can": False, "car_harness_status": 1, "faults": 0, "voltage": 12000}
+    self.can_health_data = {"bus_off": False, "total_error_cnt": 0, "last_error": "No error", "last_stored_error": "No error"}
+    self.obd_disconnected = False
+
+  def health(self):
+    return dict(self.health_data)
+
+  def is_internal(self):
+    return self.internal
+
+  def can_health(self, bus):
+    return dict(self.can_health_data)
 
   def can_send(self, address, data, bus, timeout=0):
     self.sent.append((address, bytes(data), bus))
+    if self.obd_disconnected and bus == 1 and self.obd:
+      self.can_health_data.update(total_error_cnt=self.can_health_data["total_error_cnt"] + 1,
+                                  last_error="AckError", last_stored_error="AckError")
+      return
     for target, responses in self.ecus.items():
       if target.bus != bus or (bus == 1 and target.obd != self.obd):
         continue
@@ -306,6 +323,26 @@ class TestCLI(unittest.TestCase):
     self.assertEqual(status, 0)
     self.assertEqual(report["ecus"][0]["codes"][0]["code"], "P0301")
 
+  def test_ignition_off_returns_preflight_error_without_transmitting(self):
+    panda = FakePanda({})
+    panda.health_data["ignition_line"] = False
+    status, report = self.run_with_panda(panda)
+    self.assertEqual(status, 2)
+    self.assertFalse(report["preflight"]["ready"])
+    self.assertIn("Ignition not detected", report["errors"][0])
+    self.assertEqual(panda.sent, [])
+    with contextlib.redirect_stdout(io.StringIO()) as out:
+      d.print_report(report)
+    self.assertIn("No ECU scan performed", out.getvalue())
+
+  def test_unreadable_health_returns_setup_error_and_still_cleans_up(self):
+    panda = FakePanda({})
+    with patch.object(panda, "health", side_effect=RuntimeError("health packet version mismatch")):
+      status, report = self.run_with_panda(panda)
+    self.assertEqual(status, 2)
+    self.assertIn("health packet version mismatch", report["errors"][0])
+    self.assertEqual(panda.sent, [])
+
   def test_hardware_error_and_interrupt_still_cleanup(self):
     target = d.Target(0x7E0, 0x7E8)
     for exception in (OSError("disconnected"), KeyboardInterrupt()):
@@ -337,6 +374,80 @@ class TestCLI(unittest.TestCase):
     self.assertEqual(data["revision"], "bc58b0eb7273226a1aabae98e956b70b8362bda1")
     self.assertIn("Misfire", data["labels"]["P0301"])
     self.assertNotIn("P1234", data["labels"])
+
+
+class TestPreflight(unittest.TestCase):
+  def test_either_ignition_source_is_sufficient(self):
+    panda = FakePanda({})
+    panda.health_data.update(ignition_line=False, ignition_can=True, car_harness_status=2)
+    result = d.hardware_preflight(panda)
+    self.assertTrue(result["ready"])
+    self.assertTrue(result["evidence"]["ignition_can"])
+
+  def test_missing_harness_and_panda_faults_block_scan(self):
+    for field, value, failed_check in (("car_harness_status", 0, "harness"), ("faults", 1, "panda_health")):
+      with self.subTest(field=field):
+        panda = FakePanda({})
+        panda.health_data[field] = value
+        args = d.make_parser().parse_args([])
+        with contextlib.redirect_stderr(io.StringIO()):
+          report = d.scan(panda, args, {}, {}, SAFETY)
+        self.assertTrue(report["setup_error"])
+        self.assertEqual(panda.sent, [])
+        self.assertEqual(panda.safety_modes, [])
+        check = next(c for c in report["preflight"]["checks"] if c["name"] == failed_check)
+        self.assertEqual(check["status"], "fail")
+
+  def test_external_obd_panda_does_not_require_harness_ignition_signal(self):
+    panda = FakePanda({})
+    panda.internal = False
+    panda.health_data.update(ignition_line=False, car_harness_status=0)
+    result = d.hardware_preflight(panda)
+    self.assertTrue(result["ready"])
+    self.assertEqual(result["checks"][0]["status"], "warning")
+
+  def test_obd_rx_proves_activity_not_adapter_identity(self):
+    engine = d.Target(0x7E0, 0x7E8)
+    panda = FakePanda({engine: {b"\x01\x00": bytes.fromhex("410000000000")}})
+    check = d.check_obd_link(panda, time.monotonic() + 1, wait=0)
+    self.assertEqual(check["status"], "pass")
+    self.assertIsNone(check["comma_power_present"])
+    self.assertGreater(check["received_frames"], 0)
+
+  def test_missing_obd_connection_skips_route_and_keeps_harness_scan(self):
+    engine = d.Target(0x7E0, 0x7E8, bus=0, obd=False)
+    panda = FakePanda({engine: {b"\x03": bytes.fromhex("43010301")}})
+    panda.obd_disconnected = True
+    args = d.make_parser().parse_args(["--addr", "0x7e0", "--bus", "1", "--bus", "0", "--obd", "on", "--timeout", "0.01"])
+    with contextlib.redirect_stderr(io.StringIO()):
+      report = d.scan(panda, args, {}, {}, SAFETY)
+    self.assertEqual(report["routes"][0]["outcome"], "skipped")
+    self.assertIn("comma power", report["warnings"][0])
+    self.assertIsNone(report["routes"][0]["preflight"]["comma_power_present"])
+    self.assertEqual(report["ecus"][0]["codes"][0]["code"], "P0301")
+    self.assertEqual(report["status"], "partial")
+    self.assertEqual([data[1:3] for _, data, bus in panda.sent if bus == 1], [b"\x01\x00", b"\x01\x00"])
+
+  def test_silent_bus_and_stale_errors_do_not_prove_missing_comma_power(self):
+    panda = FakePanda({})
+    panda.can_health_data.update(total_error_cnt=20, last_stored_error="AckError")
+    check = d.check_obd_link(panda, time.monotonic() + 1, wait=0)
+    self.assertEqual(check["status"], "warning")
+    self.assertIsNone(check["comma_power_present"])
+
+  def test_echoes_and_other_buses_do_not_prove_obd_connectivity(self):
+    panda = FakePanda({})
+    echoed = d.single_frame(b"\x01\x00")
+    with patch.object(panda, "can_recv", return_value=[(0x7DF, echoed, 129), (0x7DF, echoed, 193), (0x123, b"\x01", 0)]):
+      check = d.check_obd_link(panda, time.monotonic() + 1, wait=0)
+    self.assertEqual(check["received_frames"], 0)
+    self.assertEqual(check["status"], "warning")
+
+  def test_expired_deadline_does_not_send_obd_probe(self):
+    panda = FakePanda({})
+    check = d.check_obd_link(panda, time.monotonic() - 1)
+    self.assertEqual(panda.sent, [])
+    self.assertEqual(check["status"], "warning")
 
 
 if __name__ == "__main__":

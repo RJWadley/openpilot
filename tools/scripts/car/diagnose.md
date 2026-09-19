@@ -17,6 +17,29 @@ If openpilot is running in the usual tmux session, stop it with
 no-output mode when it exits, including after errors or Ctrl-C. Restart
 openpilot normally after the diagnostic session.
 
+## Automatic prerequisite checks
+
+Before sending diagnostic requests, the script checks Panda health/firmware
+compatibility, ignition, and (for an internal comma Panda) the car harness.
+Missing ignition, a missing harness, or reported Panda hardware faults stop the
+scan with an actionable setup error. Either the ignition line or CAN ignition
+signal is sufficient. An external Panda without an ignition signal produces a
+warning, since a direct OBD connection may not provide that signal.
+
+For the bus-1 OBD route, a short connectivity check sends two standard read-only
+OBD probes. Received traffic confirms CAN activity. No traffic together with
+bus-off or new acknowledgement errors skips that route and points you to the
+comma power OBD plug, its RJ45 cable to the harness box, ignition, and bitrate.
+Other selected harness routes can still be scanned. A silent bus without new
+errors remains unverified and is scanned with a warning.
+
+**Panda cannot directly identify a connected comma power adapter.** Its power
+reading and harness detection do not prove that comma power is installed. TX
+counters and local echoes also do not prove another device acknowledged a frame.
+The report therefore leaves `comma_power_present` null and reports measured OBD
+connectivity separately. Equivalent diagnostic wiring can work without comma
+power; some ECUs remain accessible through the camera/gateway harness alone.
+
 ## Targeting and routing
 
 ```sh
@@ -79,6 +102,9 @@ contains:
   candidates not probed before the deadline. An unanswered candidate is not proof
   that an ECU exists or is absent.
 - `routes`: finished, incomplete, or unscanned routes.
+- `preflight`: ignition/harness/health checks and measured evidence. An OBD
+  route also has its own connectivity `preflight`; an unavailable route is
+  marked `skipped`.
 - `errors`, `warnings`, elapsed time, and whether the deadline was reached.
 - `description_database`: source revision/license; per-code `lookup` fields are
   third-party descriptions, separate from vehicle-reported data.

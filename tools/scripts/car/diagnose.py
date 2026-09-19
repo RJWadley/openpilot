@@ -403,19 +403,96 @@ def discover(panda, candidates, bus, obd, deadline, probe_wait=0.15):
                              "not_probed": sum((t.tx, t.subaddress) not in sent for t in candidates)}
 
 
+def hardware_preflight(panda):
+  health = panda.health()  # Also checks that the firmware health-packet version matches.
+  internal = panda.is_internal()
+  harness = health.get("car_harness_status")
+  ignition_line, ignition_can = health.get("ignition_line"), health.get("ignition_can")
+  checks = []
+  if ignition_line or ignition_can:
+    checks.append({"name": "ignition", "status": "pass", "message": "Ignition detected."})
+  elif internal:
+    checks.append({"name": "ignition", "status": "fail",
+                   "message": "Ignition not detected. Turn the ignition fully on (not just accessory mode), then retry."})
+  else:
+    checks.append({"name": "ignition", "status": "warning",
+                   "message": "External Panda has no active ignition signal. Verify ignition is on before scanning."})
+  if internal:
+    checks.append({"name": "harness", "status": "pass" if harness in (1, 2) else "fail",
+                   "message": "Car harness detected." if harness in (1, 2) else
+                   "Car harness not detected. Check the harness box and the OBD-C cable connecting it to the comma."})
+  faults = health.get("faults")
+  checks.append({"name": "panda_health", "status": "pass" if faults == 0 else "fail",
+                 "message": "Panda health OK." if faults == 0 else
+                 f"Panda health check failed (faults={faults!r}). Check the connection and restart the device before retrying."})
+  return {"ready": not any(check["status"] == "fail" for check in checks), "checks": checks,
+          "evidence": {"internal_panda": internal, "ignition_line": ignition_line, "ignition_can": ignition_can,
+                       "car_harness_status": harness, "input_voltage_mv": health.get("voltage"), "faults": faults}}
+
+
+def check_obd_link(panda, deadline, wait=0.3):
+  """Check the selected bus-1 OBD path, not the physical identity of a comma power adapter."""
+  check = {"name": "obd_can", "status": "warning", "comma_power_present": None, "received_frames": 0,
+           "message": "OBD CAN connectivity is unverified. Check comma power's OBD plug and RJ45 cable to the harness box. " +
+                      "A silent bus can also mean sleeping ECUs, gateway restrictions, or unsupported diagnostics."}
+  if time.monotonic() >= deadline:
+    check["message"] = "OBD connectivity check not performed: scan deadline reached."
+    return check
+  try:
+    before = panda.can_health(1)
+  except (AttributeError, RuntimeError) as e:
+    check["message"] += f" CAN health unavailable: {e}"
+    return check
+  check["can_health_before"] = before
+  # Bus 1 is unchanged by harness orientation. TX counters and returned/echo frames
+  # only mean queued for transmission in Panda firmware; they do NOT prove a CAN ACK.
+  for address in (0x7DF, 0x18DB33F1):
+    if time.monotonic() >= deadline:
+      break
+    panda.can_send(address, single_frame(b"\x01\x00"), 1, timeout=100)
+  until = min(deadline, time.monotonic() + wait)
+  while True:
+    check["received_frames"] += sum(bus == 1 and bool(data) for _, data, bus in panda.can_recv())
+    if time.monotonic() >= until:
+      break
+    time.sleep(0.002)
+  after = panda.can_health(1)
+  check["can_health_after"] = after
+  fresh_errors = after["total_error_cnt"] > before["total_error_cnt"]
+  ack_error = "AckError" in (after["last_error"], after["last_stored_error"])
+  if check["received_frames"]:
+    check.update(status="pass", message="OBD CAN traffic received. This confirms CAN activity, not access to every ECU or comma power identity.")
+  elif after["bus_off"] or (fresh_errors and ack_error):
+    check.update(status="fail", message="OBD CAN unavailable: no received traffic and the controller reports " +
+                 "bus-off or new acknowledgement errors. Check comma power's OBD plug and RJ45 cable to the harness box " +
+                 "(or equivalent OBD wiring), ignition, and CAN bitrate. Skipping this OBD route; harness routes can still be scanned.")
+  return check
+
+
 def scan(panda, args, dataset, known_targets, safety_model):
   started = time.monotonic()
   deadline = started + args.scan_timeout
-  report = {"schema_version": 1, "started_at": datetime.now(UTC).isoformat(), "status": "partial",
-            "coverage": "best_effort", "vehicle_coverage_complete": False, "ecus": [], "discovery": [], "errors": [],
+  report = {"schema_version": 1, "started_at": datetime.now(UTC).isoformat(), "status": "partial", "setup_error": True,
+            "coverage": "best_effort", "vehicle_coverage_complete": False, "ecus": [], "discovery": [], "errors": [], "warnings": [],
             "description_database": {key: dataset[key] for key in ("source", "revision", "license") if key in dataset},
             "scope": "Classic CAN OBD-II and UDS; no K-line, J1850, DoIP, security unlocks, or ECU writes."}
   buses = args.bus if args.bus is not None else ([1] if args.addr is not None else [1, 0, 2])
   routes = [(bus, mux) for bus in buses for mux in ((True, False) if bus == 1 and args.obd == "auto" else
                                                   (bus == 1 and args.obd != "off",))]
   report["routes"] = [{"bus": bus, "obd_multiplexing": obd, "outcome": "not_scanned"} for bus, obd in routes]
-  transport = PandaTransport(panda, args.timeout, deadline)
   try:
+    report["preflight"] = hardware_preflight(panda)
+    for check in report["preflight"]["checks"]:
+      print(f"Preflight [{check['status']}]: {check['message']}", file=sys.stderr)
+      if check["status"] == "fail":
+        report["errors"].append(check["message"])
+      elif check["status"] == "warning":
+        report["warnings"].append(check["message"])
+    if not report["preflight"]["ready"]:
+      report.update(status="failed", setup_error=True, elapsed_seconds=round(time.monotonic() - started, 3), deadline_reached=False)
+      return report
+    transport = PandaTransport(panda, args.timeout, deadline)
+    report.pop("setup_error")
     for route in report["routes"]:
       if time.monotonic() >= deadline:
         break
@@ -423,6 +500,15 @@ def scan(panda, args, dataset, known_targets, safety_model):
       route["outcome"] = "incomplete"
       panda.set_safety_mode(safety_model.elm327, 0 if obd else 1)
       panda.can_clear(0xFFFF)
+      if obd:
+        route["preflight"] = check_obd_link(panda, deadline)
+        check = route["preflight"]
+        print(f"Preflight [{check['status']}]: {check['message']}", file=sys.stderr)
+        if check["status"] != "pass":
+          report["warnings"].append(check["message"])
+        if check["status"] == "fail":
+          route["outcome"] = "skipped"
+          continue
       if args.addr is not None:
         found = selected_targets(args, known_targets, bus, obd)
         emissions = found
@@ -488,7 +574,8 @@ def print_report(report):
   if report.get("deadline_reached"):
     print("Scan deadline reached; remaining queries were not completed.")
   if not report["ecus"]:
-    print("No ECUs responded. Check ignition, wiring, selected bus, and gateway access.")
+    print("No ECU scan performed; resolve the setup errors above." if report.get("setup_error") else
+          "No ECU data retrieved. Check the preflight results, selected bus, and gateway access.")
 
 
 def positive_seconds(value):
@@ -583,12 +670,12 @@ def main(argv=None):
           panda.close()
         except Exception as e:
           warnings.append(f"Failed to close Panda: {e}")
-  report["warnings"] = warnings
+  report.setdefault("warnings", []).extend(warnings)
   if args.json:
     print(json.dumps(report, indent=2, ensure_ascii=False))
   else:
     print_report(report)
-    for warning in warnings:
+    for warning in report["warnings"]:
       print(f"Warning: {warning}")
   return 2 if report.get("setup_error") else (1 if report["status"] == "failed" else 0)
 
