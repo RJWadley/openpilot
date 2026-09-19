@@ -1,4 +1,5 @@
 import contextlib
+import copy
 import io
 import json
 import sys
@@ -603,6 +604,171 @@ class TestScanning(IsolatedCacheTest):
     json.dumps(report)
 
 
+class TestReport(unittest.TestCase):
+  def fixture(self):
+    target = d.Target(0x7E0, 0x7E8)
+    panda = FakePanda({target: {b"\x03": bytes.fromhex("430203010302"), b"\x07": bytes.fromhex("47010301"),
+                                b"\x19\x02\xff": bytes.fromhex("5902ff03010089"),
+                                b"\x19\x01\xff": bytes.fromhex("5901ff040001"),
+                                b"\x19\x04\x03\x01\x00\xff": bytes.fromhex("59040301008901abcdef"),
+                                b"\x01\x01": bytes.fromhex("41010107ed00"),
+                                b"\x22\xf1\x97": b"\x62\xf1\x97Example engine",
+                                b"\x02\x00\x00": bytes.fromhex("42000000180000"),
+                                b"\x02\x02\x00": bytes.fromhex("4202000301"),
+                                b"\x02\x0c\x00": bytes.fromhex("420c001f40"),
+                                b"\x02\x0d\x00": bytes.fromhex("420d0000")}})
+    ecu = d.query_ecu(transport(panda), target, {"P0301": MISFIRE_ENTRY}, details=True, obd=True)
+    ecu["identity_candidates"] = ["unverified-brand:engine"]
+    return {"status": "partial", "ecus": [ecu], "errors": [], "warnings": [], "vehicle_coverage_complete": False}
+
+  def test_report_separates_evidence_without_mutating_it_or_trimming_obdex(self):
+    raw = self.fixture()
+    before = copy.deepcopy(raw)
+    report = d.diagnosis_report(raw)
+    self.assertEqual(raw, before)
+    self.assertEqual(d.diagnosis_report(report), report)
+    ecu = report["ecus"][0]
+    self.assertEqual(ecu["identity"]["component"], "Example engine")
+    self.assertEqual(ecu["codes"][0]["lookup"]["entry"], MISFIRE_ENTRY)
+    for key in ("queries", "identity_candidates", "ignored_non_fault_records", "uds_status_availability"):
+      self.assertNotIn(key, ecu)
+    for key in ("raw_dtc", "status_byte", "status_availability", "format"):
+      self.assertNotIn(key, ecu["codes"][0])
+    self.assertNotIn("01abcdef", json.dumps(report))
+    self.assertFalse(report["vehicle_coverage_complete"])
+    self.assertEqual(report["summary"]["fault_history_records"], 4)
+
+  def test_every_status_has_plain_language_without_claiming_live_failure(self):
+    raw = self.fixture()
+    for status in (*d.STATUS_BITS, "stored", "permanent"):
+      with self.subTest(status=status):
+        raw["ecus"][0]["codes"][0]["status"] = [status]
+        code = d.diagnosis_report(raw)["ecus"][0]["codes"][0]
+        self.assertEqual(code["status"], [status])
+        self.assertEqual(code["status_summary"], d.STATUS_MEANINGS[status])
+        self.assertNotIn("active", code)
+    for status, caution in (("stored", "not proof"), ("confirmed", "does not mean"), ("test_failed_since_last_clear", "historical"),
+                            ("test_failed", "not a continuous live measurement"), ("permanent", "may already be repaired")):
+      self.assertIn(caution, d.STATUS_MEANINGS[status])
+
+  def test_freeze_frame_is_historical_and_only_attached_to_matching_obd_faults(self):
+    codes = d.diagnosis_report(self.fixture())["ecus"][0]["codes"]
+    self.assertEqual(len(codes), 4)
+    for code in codes:
+      if code["protocol"] == "obd" and code["code"] == "P0301":
+        self.assertEqual(code["freeze_frame"], {"source": "ecu", "historical": True, "frame": 0, "code": "P0301",
+                                               "measurements": {"engine_speed": {"value": 2000, "unit": "rpm"},
+                                                                "vehicle_speed": {"value": 0, "unit": "km/h"}}})
+      else:
+        self.assertNotIn("freeze_frame", code)
+
+  def test_freeze_frame_never_crosses_ecus(self):
+    raw = self.fixture()
+    other = copy.deepcopy(raw["ecus"][0])
+    other.update(tx_address="0x7e1", rx_address="0x7e9", queries=[])
+    raw["ecus"].append(other)
+    self.assertTrue(any("freeze_frame" in c for c in d.diagnosis_report(raw)["ecus"][0]["codes"]))
+    self.assertTrue(all("freeze_frame" not in c for c in d.diagnosis_report(raw)["ecus"][1]["codes"]))
+
+  def test_unassociated_or_missing_freeze_data_does_not_invent_context(self):
+    for dtc, outcome, measurements in (("P0000", "ok", True), ("P0999", "ok", True), ("P0301", "malformed", True),
+                                       ("P0301", "ok", False)):
+      with self.subTest(dtc=dtc, outcome=outcome, measurements=measurements):
+        raw = self.fixture()
+        for query in raw["ecus"][0]["queries"]:
+          if query["name"] == "freeze_dtc":
+            query.update(data=dtc, outcome=outcome)
+          if query["name"] in ("freeze_engine_speed", "freeze_vehicle_speed") and not measurements:
+            query["outcome"] = "unsupported"
+        self.assertTrue(all("freeze_frame" not in c for c in d.diagnosis_report(raw)["ecus"][0]["codes"]))
+
+  def test_partial_freeze_data_keeps_only_successful_measurements(self):
+    raw = self.fixture()
+    next(q for q in raw["ecus"][0]["queries"] if q["name"] == "freeze_engine_speed")["outcome"] = "timeout"
+    code = next(c for c in d.diagnosis_report(raw)["ecus"][0]["codes"] if c["protocol"] == "obd")
+    self.assertEqual(code["freeze_frame"]["measurements"], {"vehicle_speed": {"value": 0, "unit": "km/h"}})
+
+  def test_lamp_status_is_vehicle_evidence_not_reference_and_not_invented_when_missing(self):
+    raw = self.fixture()
+    raw["ecus"][0]["codes"][0]["lookup"] = {"entry": {**MISFIRE_ENTRY, "flags": {"mil": True}}}
+    ecu = d.diagnosis_report(raw)["ecus"][0]
+    self.assertEqual(ecu["emissions_status"], {"source": "ecu", "timing": "at_scan", "mil_on": False, "stored_dtc_count": 1})
+    next(q for q in raw["ecus"][0]["queries"] if q["name"] == "obd_monitor_status")["outcome"] = "timeout"
+    self.assertNotIn("emissions_status", d.diagnosis_report(raw)["ecus"][0])
+
+  def test_optional_failures_hidden_but_fault_read_failures_retained(self):
+    raw = self.fixture()
+    ecu = d.diagnosis_report(raw)["ecus"][0]
+    self.assertIn({"name": "obd_permanent", "outcome": "unsupported", "error": "ECU rejected request (NRC 0x11)"}, ecu["read_results"])
+    self.assertEqual({q["name"] for q in ecu["read_results"]}, set(d.DTC_QUERIES))
+    with contextlib.redirect_stdout(io.StringIO()) as out:
+      d.print_report(raw)
+    for text in ("Historical freeze frame for P0301 (not live)", "not proof", "Check-engine light requested at scan: no", "Example explanation"):
+      self.assertIn(text, out.getvalue())
+    for text in ("uds_count", "snapshot_", "extended_data_", "part_number:", "01abcdef", "unverified-brand"):
+      self.assertNotIn(text, out.getvalue())
+    self.assertIn("obd_permanent: unsupported", out.getvalue())
+
+  def test_unreadable_ecu_is_not_healthy_and_remains_in_summary(self):
+    raw = self.fixture()
+    raw["ecus"].append({**d.Target(0x715, 0x77F).as_dict(), "dtc_read": False, "codes": [],
+                        "queries": [{"name": "uds_codes", "outcome": "timeout", "error": "No response", "responses": []}]})
+    report = d.diagnosis_report(raw)
+    self.assertEqual(report["summary"]["modules_without_dtc_data"], 1)
+    self.assertEqual(report["summary"]["modules_with_dtc_data"], 1)
+    with contextlib.redirect_stdout(io.StringIO()) as out:
+      d.print_report(report)
+    self.assertIn("DTCs unavailable; this is not a clean bill of health.", out.getvalue())
+    self.assertIn("uds_codes: timeout", out.getvalue())
+
+  def test_discovery_gaps_and_unqueried_endpoints_remain_explicit_without_raw_lists(self):
+    raw = self.fixture()
+    raw["discovery"] = [{"bus": 1, "obd_multiplexing": True, "probe_count": 10, "not_probed": 757,
+                         "unanswered": [{"tx_address": "0x700"}], "unconfirmed": [{"tx_address": "0x701"}],
+                         "ambiguous": [{"tx_address": "0x702"}, {"tx_address": "0x703"}], "responses": ["raw-probe-data"]}]
+    raw["ecus"].append({**d.Target(0x715, 0x77F).as_dict(), "dtc_read": False, "codes": [], "queries": [], "outcome": "not_queried"})
+    raw["deadline_reached"] = True
+    report = d.diagnosis_report(raw)
+    self.assertEqual(report["discovery"], [{"bus": 1, "obd_multiplexing": True, "probe_count": 10, "not_probed": 757,
+                                          "unanswered_count": 1, "unconfirmed_count": 1, "ambiguous_count": 2}])
+    self.assertEqual(report["summary"]["module_endpoints_listed"], 2)
+    self.assertEqual(report["summary"]["modules_without_dtc_data"], 1)
+    self.assertEqual(report["ecus"][1]["outcome"], "not_queried")
+    self.assertTrue(report["deadline_reached"])
+    self.assertNotIn("raw-probe-data", json.dumps(report))
+
+  def test_an_empty_successful_service_does_not_hide_another_failed_service(self):
+    target = d.Target(0x7E0, 0x7E8)
+    panda = FakePanda({target: {b"\x19\x02\xff": bytes.fromhex("5902ff"), b"\x03": None}})
+    raw = {"status": "partial", "errors": [], "ecus": [d.query_ecu(transport(panda), target, {}, obd=True)]}
+    ecu = d.diagnosis_report(raw)["ecus"][0]
+    self.assertTrue(ecu["dtc_read"])
+    self.assertEqual(ecu["codes"], [])
+    self.assertEqual(next(q for q in ecu["read_results"] if q["name"] == "obd_stored")["outcome"], "timeout")
+    with contextlib.redirect_stdout(io.StringIO()) as out:
+      d.print_report(raw)
+    self.assertIn("No fault/history records returned by successful queries.", out.getvalue())
+    self.assertIn("obd_stored: timeout", out.getvalue())
+
+  def test_default_reads_decoded_context_and_identity_without_raw_uds_details(self):
+    target = d.Target(0x7E0, 0x7E8)
+    for fault in (True, False):
+      with self.subTest(fault=fault):
+        panda = FakePanda({target: {b"\x03": bytes.fromhex("43010301" if fault else "4300"),
+                                    b"\x22\xf1\x97": b"\x62\xf1\x97Example engine",
+                                    b"\x02\x00\x00": bytes.fromhex("42000000100000"),
+                                    b"\x02\x02\x00": bytes.fromhex("4202000301"),
+                                    b"\x02\x0c\x00": bytes.fromhex("420c001f40")}})
+        ecu = d.query_ecu(transport(panda), target, {"P0301": MISFIRE_ENTRY}, obd=True)
+        report = d.diagnosis_report({"status": "partial", "ecus": [ecu], "errors": []})
+        if fault:
+          self.assertEqual(report["ecus"][0]["identity"]["component"], "Example engine")
+          self.assertEqual(report["ecus"][0]["codes"][0]["freeze_frame"]["measurements"]["engine_speed"]["value"], 2000)
+        else:
+          self.assertFalse(any(request[:1] == b"\x02" for _, request in panda.requests))
+        self.assertFalse(any(request[:2] in (b"\x19\x04", b"\x19\x06") for _, request in panda.requests))
+
+
 class TestRoutesAndCache(IsolatedCacheTest):
   engine = d.Target(0x7E0, 0x7E8)
   airbag = d.Target(0x715, 0x77F)
@@ -902,18 +1068,19 @@ class TestRoutesAndCache(IsolatedCacheTest):
 
 
 class TestCLI(IsolatedCacheTest):
-  def run_with_panda(self, panda):
+  def run_with_panda(self, panda, extra_args=()):
     factory = unittest.mock.Mock(return_value=panda)
     factory.list.return_value = ["simulated"]
     with patch.dict(sys.modules, {"panda": SimpleNamespace(Panda=factory)}), \
          patch.object(d, "check_pandad"), patch.object(d, "load_known_targets", return_value={}), \
          contextlib.redirect_stdout(io.StringIO()) as out, contextlib.redirect_stderr(io.StringIO()):
-      status = d.main(["--addr", "0x7e0", "--obd", "on", "--json", "--timeout", "0.01", "--probe-timeout", "0.001"])
+      status = d.main(["--addr", "0x7e0", "--obd", "on", "--json", "--timeout", "0.01", "--probe-timeout", "0.001", *extra_args])
     factory.assert_called_once_with(serial=None, cli=False)
     self.assertEqual(panda.safety_modes[-1], (SAFETY.noOutput, 0))
     self.assertTrue(panda.closed)
     report = json.loads(out.getvalue())
-    self.assertEqual(report["schema_version"], 3)
+    self.assertEqual(report["schema_version"], 4)
+    self.assertEqual(report["report_kind"], "diagnosis")
     return status, report
 
   def test_json_output_and_cleanup(self):
@@ -922,6 +1089,44 @@ class TestCLI(IsolatedCacheTest):
     status, report = self.run_with_panda(panda)
     self.assertEqual(status, 0)
     self.assertEqual(report["ecus"][0]["codes"][0]["code"], "P0301")
+    self.assertNotIn("queries", report["ecus"][0])
+    self.assertIn("not proof", report["ecus"][0]["codes"][0]["status_summary"])
+
+  def test_separate_evidence_keeps_raw_responses_and_preflight(self):
+    target = d.Target(0x7E0, 0x7E8)
+    panda = FakePanda({target: {b"\x03": bytes.fromhex("43010301")}})
+    path = self.cache_path.parent / "evidence.json"
+    status, report = self.run_with_panda(panda, ["--evidence", str(path)])
+    evidence = json.loads(path.read_text())
+    self.assertEqual(status, 0)
+    self.assertEqual(report["evidence_file"], str(path.resolve()))
+    self.assertEqual(evidence["schema_version"], 4)
+    self.assertEqual(evidence["report_kind"], "technical_evidence")
+    self.assertIn("evidence", evidence["preflight"])
+    self.assertNotIn("evidence", report["preflight"])
+    query = next(q for q in evidence["ecus"][0]["queries"] if q["name"] == "obd_stored")
+    self.assertEqual(query["responses"], ["43010301"])
+    self.assertNotIn("responses", json.dumps(report))
+
+  def test_evidence_write_failure_preserves_diagnostics_and_existing_file(self):
+    target = d.Target(0x7E0, 0x7E8)
+    existing = self.cache_path.parent / "existing.json"
+    existing.write_text("keep this")
+    for path in (existing, self.cache_path.parent / "missing" / "evidence.json"):
+      with self.subTest(path=path):
+        status, report = self.run_with_panda(FakePanda({target: {b"\x03": bytes.fromhex("43010301")}}), ["--evidence", str(path)])
+        self.assertEqual(status, 0)
+        self.assertNotIn("evidence_file", report)
+        self.assertTrue(any("Could not save technical evidence" in warning for warning in report["warnings"]))
+    self.assertEqual(existing.read_text(), "keep this")
+
+  def test_evidence_can_be_saved_after_setup_failure(self):
+    path = self.cache_path.parent / "failed-evidence.json"
+    with patch.object(d, "check_pandad", side_effect=RuntimeError("pandad is running")), contextlib.redirect_stdout(io.StringIO()) as out:
+      status = d.main(["--json", "--evidence", str(path)])
+    self.assertEqual(status, 2)
+    self.assertTrue(json.loads(out.getvalue())["setup_error"])
+    self.assertEqual(json.loads(path.read_text())["errors"], ["RuntimeError: pandad is running"])
 
   def test_reported_panda_faults_warn_but_do_not_block_diagnostics(self):
     target = d.Target(0x7E0, 0x7E8)
@@ -933,7 +1138,7 @@ class TestCLI(IsolatedCacheTest):
         self.assertEqual(status, 0)
         self.assertEqual(report["ecus"][0]["codes"][0]["code"], "P0301")
         self.assertTrue(report["preflight"]["ready"])
-        self.assertEqual(report["preflight"]["evidence"]["faults"], faults)
+        self.assertNotIn("evidence", report["preflight"])
         check = next(c for c in report["preflight"]["checks"] if c["name"] == "panda_health")
         self.assertEqual(check["status"], "warning")
         self.assertIn(check["message"], report["warnings"])

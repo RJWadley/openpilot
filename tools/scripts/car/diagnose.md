@@ -11,8 +11,9 @@ python tools/scripts/car/diagnose.py
 python tools/scripts/car/diagnose.py --fast
 python tools/scripts/car/diagnose.py --broad
 python tools/scripts/car/diagnose.py --broad --fast
-python tools/scripts/car/diagnose.py --details
-python tools/scripts/car/diagnose.py --details --json > diagnosis.json
+python tools/scripts/car/diagnose.py --json > diagnosis.json
+# Keep raw protocol evidence separately; choose a new filename each run.
+python tools/scripts/car/diagnose.py --details --evidence evidence.json --json > diagnosis.json
 ```
 
 If openpilot is running in the usual tmux session, stop it with
@@ -32,7 +33,7 @@ warning, since a direct OBD connection may not provide that signal.
 Reported Panda fault flags produce a warning, not a scan-wide block. They are
 telemetry rather than a diagnostic-permission check: for example, `faults=8`
 records a CAN2 interrupt-rate fault that remains latched after the rate recovers.
-The raw `faults` and `fault_status` remain in the report. A warning does not prove
+The raw `faults` and `fault_status` remain in the technical evidence. A warning does not prove
 the fault is historical or harmless; an underlying problem may still prevent
 communication. Panda's own transmit restrictions remain enforced, and actual
 connection failures are handled by the checks below.
@@ -136,8 +137,9 @@ or request + `0x6a`. It rejects queued/other-bus/echo traffic and corroborates
 candidate pairs with a different read service. Delayed replies that cannot be
 corroborated remain `unconfirmed`. Within a route, multiple reply addresses for
 one request, or one reply address shared by multiple requests, remain `ambiguous`
-and are not counted as separate identified ECUs. Their addresses and raw evidence
-are in JSON. Results across different routes are still retained separately.
+and are not counted as separate identified ECUs. Their counts remain in the diagnosis
+report; their addresses and raw replies are saved with `--evidence FILE`.
+Results across different routes are still retained separately.
 Avoid running any other diagnostic tester simultaneously: UDS replies lack a
 transaction identifier, so this is bounded corroboration, not proof against
 arbitrarily delayed or concurrent traffic.
@@ -158,10 +160,25 @@ module. See [the discovery research](diagnose-discovery-notes.md).
 - Records without supported failure, pending, confirmed, failure-history, or
   warning-indicator flags are omitted from `codes`. In particular, test-not-completed
   flags alone are not faults. `ignored_non_fault_records` counts omitted UDS records;
-  the original response bytes remain available in `queries[].responses`.
-- `--details`: ECU identification, raw UDS snapshots and extended records, and
-  supported OBD freeze-frame-zero values (load, coolant/intake temperature, RPM,
-  speed, and the associated DTC). The detail limit applies after filtering non-faults.
+  the count and original response bytes remain in the technical evidence.
+- Every code keeps its original `status` flags and adds a deterministic, plain-English
+  `status_summary`. A stored or confirmed code is not proof of a problem happening
+  now. A failed latest test is not a continuous live measurement. We do not invent
+  an `active` classification from history flags or treat an absent flag as proof
+  of health. UDS status semantics follow the
+  [AUTOSAR Diagnostic Event Manager definitions](https://www.autosar.org/fileadmin/standards/R23-11/CP/AUTOSAR_CP_SWS_DiagnosticEventManager.pdf).
+- ECU identification is requested for modules returning faults, even without
+  `--details`. Supported OBD freeze-frame-zero values (load, coolant/intake
+  temperature, RPM, speed) are also read automatically when OBD codes are returned.
+  The short, decoded `freeze_frame` is attached only to the matching OBD code
+  from that same ECU, with units and `historical: true`. It is not attached to an
+  unknown-format UDS code just because both codes might describe the same problem.
+  Missing, unsuccessful, unassociated, and undecoded readings are not included;
+  missing data is not a zero value or proof of a healthy system.
+- `--details` additionally reads raw UDS snapshots/extended records and identifies
+  modules without faults. Save these technical details with `--evidence FILE`;
+  they are not injected into the model-facing report. The detail limit applies
+  after filtering non-faults.
 - Full available OBDex entries under `lookup.entry`, with the source and English
   title also available under `lookup.source` and `lookup.title`. Every upstream field,
   translation, nested value, and reference is retained. The text report prints the
@@ -179,11 +196,12 @@ forms. Known SAE codes retain their P/B/C/U notation and failure type. Unknown-f
 UDS codes include the complete raw integer in decimal and hexadecimal; no inferred
 SAE code or manufacturer mapping is used. For example, raw `0x901614` is also
 `9442836`, a form found in [VCDS scan logs](https://forums.ross-tech.com/index.php?threads/21439/).
-Unmapped faults trigger read-only ECU identification queries even without `--details`.
+Faults trigger read-only ECU identification queries even without `--details`.
 Successful identifiers are exposed under `identity`; `search.query` combines the
 code with the ECU-reported component and part number when available, e.g.
 `9442836 AirbagVW20 5Q0959655J`. These searches are suggestions, not verified meanings.
-Raw `code`, `raw_dtc`, and reported `format` remain available independently.
+The canonical `code` remains in the diagnosis report; `raw_dtc`, status bytes,
+availability masks, and reported `format` remain in the technical evidence.
 
 Only fixed read requests, tester-present, and default/extended diagnostic session
 selection are allowed. Extended sessions are entered only after a session-related
@@ -192,26 +210,47 @@ code clearing, security unlocking, ECU reset, coding, or arbitrary-command optio
 
 ## JSON and incomplete scans
 
-`--json` emits one report on stdout, with progress/debug output on stderr. Version 3
+Text and JSON use the same diagnosis view. `--json` emits one report on stdout,
+with progress/debug output on stderr. Schema version **4**, `report_kind: diagnosis`,
 contains:
 
-- `ecus`: physical addresses, route, ECU-reported identity, identity candidates, filtered fault/history codes, and every
-  attempted request with raw responses and its outcome.
-- `discovery`: observed replies and confirmation queries, `unanswered` request
-  addresses/subaddresses (no invented reply address), `unconfirmed` candidate
-  pairs, `ambiguous` corroborated pairs, and the count `not_probed` before the
-  deadline. An unanswered candidate is not proof that an ECU exists or is absent.
+- `ecus`: physical addresses, route, ECU-reported identity, filtered fault/history
+  codes with plain-English status and full OBDex entries, and associated decoded
+  historical context. Address-based identity guesses are excluded.
+- `read_results`: per-ECU outcomes of fault-code requests, including timeouts and
+  unsupported services. Optional identification/format/snapshot request failures
+  are left in technical evidence. Reading one service successfully does not hide
+  failed attempts to read another.
+- `emissions_status`: per-ECU check-engine-light request and stored-code count,
+  only when the module answered successfully. `source: ecu` and `timing: at_scan`
+  distinguish this from OBDex reference flags and historical snapshots.
+- `summary`: listed module endpoints, endpoints with/without DTC data, and
+  fault/history record count. Neither endpoints across routes nor codes across
+  protocols are assumed to be unique physical modules or distinct problems.
+- `discovery`: per-route counts of probes, unanswered requests, unconfirmed and
+  ambiguous reply pairs, and unprobed candidates. An unanswered candidate is not
+  proof that an ECU exists or is absent.
 - `routes`: finished, incomplete, or unscanned routes.
-- `preflight`: ignition/harness/health checks and measured evidence. An OBD
+- `preflight`: ignition/harness/health check outcomes and messages. An OBD
   route also has its own connectivity `preflight`; an unavailable route is
   marked `skipped`.
 - `errors`, `warnings`, elapsed time, and whether the deadline was reached.
 - `description_database`: source revision/license; per-code `lookup.entry` fields
   are complete third-party reference entries, separate from vehicle-reported data.
 
-Compared with version 2, `codes` and decoded UDS query `data` exclude non-fault
-records, matched codes include full entries, and unmapped codes have search forms.
-Full entries are attached only to `codes`, not repeated in the decoded query data.
+Compared with version 3, raw requests/responses, decoded query duplication,
+discovery address lists, hardware telemetry, and address-based identity guesses
+are no longer included in the main report. Full OBDex entries are still retained.
+
+`--evidence FILE` writes a separate JSON report with `report_kind: technical_evidence`
+and the same schema version. It preserves the detailed scan structure from
+version 3: `ecus[].queries`, original response bytes, raw UDS records (if requested),
+identity candidates, omitted-detail/non-fault counts, discovery addresses/replies,
+and preflight telemetry. This file is written after Panda cleanup and is **not**
+automatically included in model input. It refuses to overwrite an existing file;
+an evidence-write failure warns without discarding the diagnosis. On success,
+the main report includes `evidence_file` with its path. Without this option, raw
+evidence is not persisted. Cache behavior is unchanged.
 
 `status: partial` means some DTC data was read. `status: failed` means none was
 read, or setup failed. `vehicle_coverage_complete` is always false: this scanner

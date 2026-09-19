@@ -18,11 +18,25 @@ from pathlib import Path
 
 
 DATASET = Path(__file__).with_name("data") / "obdex.json.gz"
+SCHEMA_VERSION = 4
 STATUS_BITS = (
   "test_failed", "test_failed_this_operation_cycle", "pending", "confirmed",
   "test_not_completed_since_last_clear", "test_failed_since_last_clear",
   "test_not_completed_this_operation_cycle", "warning_indicator_requested",
 )
+STATUS_MEANINGS = {
+  "test_failed": "The module's latest test result was a failure, not a continuous live measurement.",
+  "test_failed_this_operation_cycle": "A test failed during the module's current operation cycle; it may have passed since.",
+  "pending": "Pending: a failure was detected; this flag alone does not establish a confirmed or ongoing fault.",
+  "confirmed": "Confirmed: the module's confirmation criteria were met; this alone does not mean the fault is happening now.",
+  "test_not_completed_since_last_clear": "The test has not completed since codes were last cleared.",
+  "test_failed_since_last_clear": "A failure occurred since codes were last cleared; this may be historical.",
+  "test_not_completed_this_operation_cycle": "The test has not completed during the module's current operation cycle.",
+  "warning_indicator_requested": "The module requests a warning indicator for this fault.",
+  "stored": "Stored: a recorded fault, not proof that it is happening now.",
+  "permanent": "Permanent emissions record: retained until the vehicle verifies resolution; the problem may already be repaired.",
+}
+DTC_QUERIES = ("uds_codes", "obd_stored", "obd_pending", "obd_permanent")
 # Failure/pending/confirmed/history/lamp evidence. Bits 4 and 6 only say a test has not completed.
 FAULT_STATUS_MASK = 0xAF
 OBD_MODES = {0x03: "stored", 0x07: "pending", 0x0A: "permanent"}
@@ -292,14 +306,18 @@ def query_ecu(transport, target, entries, details=False, max_details=16, obd=Fal
           result["codes"].extend(dict(record) for record in query["data"])
       reader.read("obd_monitor_status", b"\x01\x01", b"\x41\x01", parse_monitor_status)
 
-    # Unmapped faults need real ECU context for useful searches, even without --details.
-    if result["dtc_read"] and (details or any(code["code"] not in entries for code in result["codes"])):
+    # Every fault benefits from ECU-reported identity, not cross-brand address hints.
+    if result["dtc_read"] and (details or result["codes"]):
       result["identity"] = {}
       for did, name in IDENTIFIERS.items():
         request = b"\x22" + did.to_bytes(2, "big")
         query = reader.read(name, request, b"\x62" + request[1:], lambda data: data.decode("utf-8", errors="replace").rstrip("\x00").strip())
         if query["outcome"] == "ok":
           result["identity"][name] = query["data"]
+
+    # Collect the small decoded context before spending the budget on raw UDS details.
+    if obd and (details or any(code["protocol"] == "obd" for code in result["codes"])):
+      read_freeze_frame(reader)
 
     if details and result["dtc_read"]:
       uds_records = [code for code in result["codes"] if code["protocol"] == "uds"]
@@ -310,8 +328,6 @@ def query_ecu(transport, target, entries, details=False, max_details=16, obd=Fal
           # Keep the ECU-specific record body raw; the response prefix validates the echoed DTC.
           reader.read(f"{name}_{code['raw_dtc']}", bytes([0x19, subfunction]) + raw + b"\xff",
                       bytes([0x59, subfunction]) + raw, parse_uds_detail)
-      if obd:
-        read_freeze_frame(reader)
   except KeyboardInterrupt:
     result["interrupted"] = True
   except Exception as e:
@@ -656,7 +672,8 @@ def save_module_cache(path, data):
 def scan(panda, args, dataset, known_targets, safety_model):
   started = time.monotonic()
   deadline = started + args.scan_timeout
-  report = {"schema_version": 3, "started_at": datetime.now(UTC).isoformat(), "status": "partial", "setup_error": True,
+  report = {"schema_version": SCHEMA_VERSION, "report_kind": "technical_evidence",
+            "started_at": datetime.now(UTC).isoformat(), "status": "partial", "setup_error": True,
             "coverage": "best_effort", "vehicle_coverage_complete": False, "ecus": [], "discovery": [], "errors": [], "warnings": [],
             "description_database": {key: dataset[key] for key in ("source", "revision", "license") if key in dataset},
             "scope": "Classic CAN OBD-II and UDS; no K-line, J1850, DoIP, security unlocks, or ECU writes."}
@@ -734,7 +751,7 @@ def scan(panda, args, dataset, known_targets, safety_model):
         if discovery["unconfirmed"] or discovery["ambiguous"]:
           report["warnings"].append(f"Bus {bus} ({'OBD port' if obd else 'harness'}): " +
                                     f"{len(discovery['unconfirmed'])} unconfirmed and {len(discovery['ambiguous'])} ambiguous reply pairs " +
-                                    "were not treated as identified ECUs. --json includes their addresses and raw replies.")
+                                    "were not treated as identified ECUs. Use --evidence FILE to save their addresses and raw replies.")
       for target in sorted(found, key=target_key):
         if time.monotonic() >= deadline:
           report["ecus"].append({**target.as_dict(), "dtc_read": False, "codes": [], "queries": [], "outcome": "not_queried"})
@@ -783,36 +800,94 @@ def scan(panda, args, dataset, known_targets, safety_model):
   return report
 
 
+def diagnosis_report(report):
+  """One model/human-facing view; the original report remains intact as technical evidence."""
+  if report.get("report_kind") == "diagnosis":
+    return report
+  result = {key: report[key] for key in ("started_at", "status", "setup_error", "coverage", "vehicle_coverage_complete", "scope",
+                                        "errors", "warnings", "elapsed_seconds", "deadline_reached", "description_database", "cache",
+                                        "evidence_file", "replay") if key in report}
+  result.update(schema_version=SCHEMA_VERSION, report_kind="diagnosis", ecus=[],
+                interpretation="Fault/history records are not a count of active problems. Missing data does not mean healthy.",
+                reference_notice="OBDex entries are third-party reference material, not vehicle findings. " +
+                                 "Possible causes and repair estimates are not diagnoses; flags.mil is not the vehicle's lamp state.")
+  if "preflight" in report:
+    result["preflight"] = {key: report["preflight"][key] for key in ("ready", "checks")}
+  result["routes"] = []
+  for route in report.get("routes", []):
+    item = {key: value for key, value in route.items() if key != "preflight"}
+    if "preflight" in route:
+      item["preflight"] = {key: route["preflight"][key] for key in ("status", "message", "comma_power_present")}
+    result["routes"].append(item)
+  result["discovery"] = [{"bus": route["bus"], "obd_multiplexing": route["obd_multiplexing"],
+                          "probe_count": route["probe_count"], "not_probed": route["not_probed"],
+                          **{f"{key}_count": len(route[key]) for key in ("unanswered", "unconfirmed", "ambiguous")}}
+                         for route in report.get("discovery", [])]
+  for ecu in report["ecus"]:
+    item = {key: ecu[key] for key in ("bus", "obd_multiplexing", "tx_address", "rx_address", "subaddress", "identity", "dtc_read",
+                                     "outcome", "error", "interrupted") if key in ecu}
+    queries = ecu.get("queries", [])
+    item["read_results"] = [{key: query[key] for key in ("name", "outcome", "error") if key in query}
+                            for query in queries if query["name"] in DTC_QUERIES]
+    successful = {query["name"]: query["data"] for query in queries if query["outcome"] == "ok"}
+    if "obd_monitor_status" in successful:
+      item["emissions_status"] = {"source": "ecu", "timing": "at_scan", **{
+        key: successful["obd_monitor_status"][key] for key in ("mil_on", "stored_dtc_count")}}
+    measurements = {name: {key: successful[f"freeze_{name}"][key] for key in ("value", "unit")}
+                    for name, _ in FREEZE_PIDS.values() if f"freeze_{name}" in successful}
+    item["codes"] = []
+    for code in ecu["codes"]:
+      fault = {key: code[key] for key in ("protocol", "code", "display_code", "failure_type", "status", "lookup", "search") if key in code}
+      fault["status_summary"] = " ".join(STATUS_MEANINGS[flag] for flag in code["status"] if flag in STATUS_MEANINGS) or "Status unknown."
+      # A generic OBD frame cannot safely be attached to a UDS code or a different ECU.
+      if code["protocol"] == "obd" and code["code"] == successful.get("freeze_dtc") and code["code"] != "P0000" and measurements:
+        fault["freeze_frame"] = {"source": "ecu", "historical": True, "frame": 0, "code": code["code"], "measurements": measurements}
+      item["codes"].append(fault)
+    result["ecus"].append(item)
+  result["summary"] = {"module_endpoints_listed": len(result["ecus"]),
+                       "modules_with_dtc_data": sum(ecu["dtc_read"] for ecu in result["ecus"]),
+                       "modules_without_dtc_data": sum(not ecu["dtc_read"] for ecu in result["ecus"]),
+                       "fault_history_records": sum(len(ecu["codes"]) for ecu in result["ecus"])}
+  return result
+
+
 def print_report(report):
+  report = diagnosis_report(report)
   print(f"Diagnostic scan: {report['status']} (vehicle-wide coverage is not verified)")
+  print(report["interpretation"])
+  print(report["reference_notice"])
+  summary = report["summary"]
+  print(f"{summary['fault_history_records']} fault/history records; " +
+        f"{summary['modules_with_dtc_data']}/{summary['module_endpoints_listed']} listed module endpoints returned DTC data.")
   for ecu in report["ecus"]:
     route = "OBD port" if ecu["obd_multiplexing"] else "harness"
     print(f"\nBus {ecu['bus']} / {route} / {ecu['tx_address']} → {ecu['rx_address']} / subaddress {ecu['subaddress']}")
     if ecu.get("identity"):
       print("  ECU: " + " / ".join(ecu["identity"][name] for name in ("component", "part_number", "software_version") if ecu["identity"].get(name)))
-    if ecu.get("identity_candidates"):
-      print("  Address hints: " + ", ".join(ecu["identity_candidates"]))
     if not ecu["dtc_read"]:
       print("  DTCs unavailable; this is not a clean bill of health.")
     elif not ecu["codes"]:
       print("  No fault/history records returned by successful queries.")
-    if ecu.get("ignored_non_fault_records"):
-      print(f"  Ignored {ecu['ignored_non_fault_records']} records without supported fault/history flags.")
+    if "emissions_status" in ecu:
+      print(f"  Check-engine light requested at scan: {'yes' if ecu['emissions_status']['mil_on'] else 'no'} (ECU-reported).")
     for code in ecu["codes"]:
       failure = f"-{code['failure_type'][2:]}" if "failure_type" in code else ""
       print(f"  {code.get('display_code', code['code'] + failure)} [{code['protocol']}] {', '.join(code['status']) or 'no supported status bits set'}")
+      print(f"    {code['status_summary']}")
+      if "freeze_frame" in code:
+        values = ", ".join(f"{name.replace('_', ' ')}: {value['value']:g} {value['unit']}"
+                           for name, value in code["freeze_frame"]["measurements"].items())
+        print(f"    Historical freeze frame for {code['code']} (not live): {values}")
       if "lookup" in code:
         print("    OBDex reference (possible causes/estimates, not confirmed vehicle findings):")
         print("\n".join("      " + line for line in json.dumps(code["lookup"]["entry"], indent=2, ensure_ascii=False).splitlines()))
       elif "search" in code:
         print(f"    Search: {code['search']['query']}")
-    for query in ecu["queries"]:
+    for query in ecu["read_results"]:
       if query["outcome"] != "ok":
         print(f"  {query['name']}: {query['outcome']} — {query.get('error', '')}")
-      elif query["name"] not in ("uds_codes", "uds_count", "obd_stored", "obd_pending", "obd_permanent"):
-        print(f"  {query['name']}: {json.dumps(query['data'], ensure_ascii=False)}")
-    if ecu.get("details_omitted"):
-      print(f"  Details omitted for {ecu['details_omitted']} codes (--max-details).")
+    if ecu.get("error"):
+      print(f"  Error: {ecu['error']}")
   for error in report["errors"]:
     print(f"Error: {error}")
   if report.get("deadline_reached"):
@@ -820,6 +895,10 @@ def print_report(report):
   if not report["ecus"]:
     print("No ECU scan performed; resolve the setup errors above." if report.get("setup_error") else
           "No ECU data retrieved. Check the preflight results, selected bus, and gateway access.")
+  for warning in report.get("warnings", []):
+    print(f"Warning: {warning}")
+  if "evidence_file" in report:
+    print(f"Technical evidence: {report['evidence_file']}")
 
 
 def positive_seconds(value):
@@ -841,12 +920,13 @@ def make_parser():
                       help="override buses; repeat to select several (default: 1, or 1/0/2 with --broad)")
   parser.add_argument("--obd", choices=("auto", "on", "off"), help="override bus 1 routing: auto tries both (default: on, or auto with --broad)")
   parser.add_argument("--serial", help="Panda serial (required if several are connected)")
-  parser.add_argument("--details", action="store_true", help="read ECU identifiers, UDS raw snapshots/extended records and OBD freeze frame zero")
+  parser.add_argument("--details", action="store_true", help="also read raw UDS details and identifiers on fault-free modules (save with --evidence)")
   parser.add_argument("--max-details", type=int, default=16, help="maximum UDS faults per ECU for detail retrieval (default: 16)")
   parser.add_argument("--timeout", type=positive_seconds, default=1.0, help="absolute per-request timeout, including response-pending (seconds)")
   parser.add_argument("--probe-timeout", type=positive_seconds, default=0.1, help="listen window per discovery probe in seconds (default: 0.1)")
   parser.add_argument("--scan-timeout", type=positive_seconds, default=600.0, help="total query/discovery budget in seconds (default: 600)")
   parser.add_argument("--json", action="store_true", help="emit one JSON report on stdout; progress goes to stderr")
+  parser.add_argument("--evidence", type=Path, metavar="FILE", help="save full technical evidence separately as JSON; refuses to overwrite a file")
   parser.add_argument("--debug", action="store_true", help="ISO-TP logging to stderr")
   return parser
 
@@ -905,7 +985,7 @@ def main(argv=None):
     panda = Panda(serial=args.serial, cli=False)
     report = scan(panda, args, dataset, known_targets, CarParams.SafetyModel)
   except Exception as e:
-    report = {"schema_version": 3, "status": "failed", "vehicle_coverage_complete": False,
+    report = {"schema_version": SCHEMA_VERSION, "report_kind": "technical_evidence", "status": "failed", "vehicle_coverage_complete": False,
               "ecus": [], "errors": [f"{type(e).__name__}: {e}"], "setup_error": True}
   finally:
     if panda is not None:
@@ -919,12 +999,18 @@ def main(argv=None):
         except Exception as e:
           warnings.append(f"Failed to close Panda: {e}")
   report.setdefault("warnings", []).extend(warnings)
+  if args.evidence is not None:
+    try:
+      with args.evidence.open("x", encoding="utf-8") as stream:
+        json.dump(report, stream, indent=2, ensure_ascii=False)
+        stream.write("\n")
+      report["evidence_file"] = str(args.evidence.resolve())
+    except OSError as e:
+      report["warnings"].append(f"Could not save technical evidence to {args.evidence}: {e}")
   if args.json:
-    print(json.dumps(report, indent=2, ensure_ascii=False))
+    print(json.dumps(diagnosis_report(report), indent=2, ensure_ascii=False))
   else:
     print_report(report)
-    for warning in report["warnings"]:
-      print(f"Warning: {warning}")
   return 2 if report.get("setup_error") else (1 if report["status"] == "failed" else 0)
 
 
