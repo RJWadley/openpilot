@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
 """Read OBD-II/UDS faults on a parked vehicle with openpilot stopped. See diagnose.md."""
 import argparse
+import hashlib
 import json
 import math
+import re
 import subprocess
 import sys
+import tempfile
 import time
 from collections import defaultdict
 from dataclasses import dataclass
@@ -29,6 +32,8 @@ FIXED_REQUESTS = {b"\x03", b"\x07", b"\x0a", b"\x01\x00", b"\x01\x01", b"\x3e\x0
                   b"\x02\x00\x00", b"\x02\x02\x00"}
 FIXED_REQUESTS |= {b"\x02" + bytes([pid, 0]) for pid in FREEZE_PIDS}
 FIXED_REQUESTS |= {b"\x22" + did.to_bytes(2, "big") for did in IDENTIFIERS}
+VIN_REQUESTS = {b"\x22\xf1\x90": b"\x62\xf1\x90", b"\x09\x02": b"\x49\x02\x01"}
+FIXED_REQUESTS |= VIN_REQUESTS.keys()
 
 
 @dataclass(frozen=True)
@@ -515,6 +520,97 @@ def check_obd_link(panda, deadline, wait=0.3):
   return check
 
 
+def selected_routes(args):
+  buses = args.bus if args.bus is not None else ([1, 0, 2] if args.broad else [1])
+  obd = args.obd or ("auto" if args.broad else "on")
+  return list(dict.fromkeys((bus, mux) for bus in buses for mux in
+                           ((True, False) if bus == 1 and obd == "auto" else (bus == 1 and obd != "off",))))
+
+
+def module_cache_path():
+  root = Path("/data") if Path("/AGNOS").is_file() else Path.home() / ".cache" / "openpilot"
+  return root / "diagnostics" / "modules.json"
+
+
+def cached_target(data):
+  target = Target(int(data["tx_address"], 16), int(data["rx_address"], 16), data["bus"], data["obd_multiplexing"], data["subaddress"])
+  if (not valid_tx(target.tx) or not 0 <= target.rx <= 0x1FFFFFFF or type(target.bus) is not int or target.bus not in (0, 1, 2) or
+      type(target.obd) is not bool or (target.obd and target.bus != 1) or
+      (target.subaddress is not None and (type(target.subaddress) is not int or not 0 <= target.subaddress <= 255))):
+    raise ValueError("Invalid cached diagnostic address")
+  return target
+
+
+def load_module_cache(path):
+  data = json.loads(path.read_text())
+  if data["version"] != 1 or not isinstance(data["routes"], list):
+    raise ValueError("Unsupported module cache format")
+  identity = data["identity"]
+  identity_target = cached_target(identity["target"])
+  if bytes.fromhex(identity["request"]) not in VIN_REQUESTS or re.fullmatch(r"[0-9a-f]{64}", identity["vin_hash"]) is None:
+    raise ValueError("Invalid cached vehicle identity")
+  routes, all_targets = set(), set()
+  for route in data["routes"]:
+    bus, obd = route["bus"], route["obd_multiplexing"]
+    if (type(bus) is not int or bus not in (0, 1, 2) or type(obd) is not bool or (obd and bus != 1) or (bus, obd) in routes or
+        not isinstance(route["targets"], list) or not isinstance(route["scanned_at"], str)):
+      raise ValueError("Invalid cached route")
+    routes.add((bus, obd))
+    requests, replies = set(), set()
+    for item in route["targets"]:
+      target = cached_target(item)
+      tx, rx = (target.tx, target.subaddress), (target.rx, target.subaddress)
+      if ((target.bus, target.obd) != (bus, obd) or type(item["emissions"]) is not bool or tx in requests or rx in replies):
+        raise ValueError("Ambiguous cached diagnostic address")
+      requests.add(tx)
+      replies.add(rx)
+      all_targets.add(target)
+  if identity_target not in all_targets:
+    raise ValueError("Vehicle identity missing from cached modules")
+  return data
+
+
+def read_vin_hash(transport, target, request):
+  def decode(data):
+    data = data.rstrip(b"\x00")
+    if request == b"\x22\xf1\x90" and data[:1] == b"\x11":
+      data = data[1:]
+    vin = data.decode("ascii")
+    if re.fullmatch(r"[A-HJ-NPR-Z0-9]{17}", vin) is None or vin == "0" * 17:
+      raise ValueError("Invalid VIN")
+    return hashlib.sha256(data).hexdigest()
+
+  query = Reader(transport, target).read("cache_vehicle_identity", request, VIN_REQUESTS[request], decode)
+  return query.get("data") if query["outcome"] == "ok" else None
+
+
+def find_vehicle_identity(panda, targets, timeout, deadline):
+  # Only query discovered endpoints, with a small total budget. Never trust a stale CarVin param.
+  wire = PandaTransport(panda, timeout, min(deadline, time.monotonic() + 5))
+  for target in sorted(targets, key=lambda t: (t.tx not in (0x7E0, 0x18DA10F1), target_key(t))):
+    for request in VIN_REQUESTS:
+      if time.monotonic() >= wire.deadline:
+        return None
+      vin_hash = read_vin_hash(wire, target, request)
+      if vin_hash:
+        return {"target": target.as_dict(), "request": request.hex(), "vin_hash": vin_hash}
+  return None
+
+
+def save_module_cache(path, data):
+  path.parent.mkdir(parents=True, exist_ok=True)
+  temporary = None
+  try:
+    with tempfile.NamedTemporaryFile(mode="w", dir=path.parent, prefix="modules-", suffix=".tmp", delete=False) as stream:
+      temporary = Path(stream.name)
+      json.dump(data, stream, indent=2)
+      stream.write("\n")
+    temporary.replace(path)
+  finally:
+    if temporary is not None:
+      temporary.unlink(missing_ok=True)
+
+
 def scan(panda, args, dataset, known_targets, safety_model):
   started = time.monotonic()
   deadline = started + args.scan_timeout
@@ -522,10 +618,11 @@ def scan(panda, args, dataset, known_targets, safety_model):
             "coverage": "best_effort", "vehicle_coverage_complete": False, "ecus": [], "discovery": [], "errors": [], "warnings": [],
             "description_database": {key: dataset[key] for key in ("source", "revision", "license") if key in dataset},
             "scope": "Classic CAN OBD-II and UDS; no K-line, J1850, DoIP, security unlocks, or ECU writes."}
-  buses = args.bus if args.bus is not None else ([1] if args.addr is not None else [1, 0, 2])
-  routes = [(bus, mux) for bus in buses for mux in ((True, False) if bus == 1 and args.obd == "auto" else
-                                                  (bus == 1 and args.obd != "off",))]
+  routes = selected_routes(args)
   report["routes"] = [{"bus": bus, "obd_multiplexing": obd, "outcome": "not_scanned"} for bus, obd in routes]
+  cache_path = module_cache_path()
+  cache, identity, refreshed = None, None, []
+  report["cache"] = {"fast_requested": args.fast, "path": str(cache_path), "routes_reused": 0, "updated": False}
   try:
     report["preflight"] = hardware_preflight(panda)
     for check in report["preflight"]["checks"]:
@@ -539,6 +636,13 @@ def scan(panda, args, dataset, known_targets, safety_model):
       return report
     transport = PandaTransport(panda, args.timeout, deadline)
     report.pop("setup_error")
+    try:
+      cache = load_module_cache(cache_path)
+    except FileNotFoundError:
+      if args.fast:
+        report["warnings"].append("No module cache yet; running discovery.")
+    except (OSError, ValueError, KeyError, TypeError, AttributeError) as e:
+      report["warnings"].append(f"Module cache unavailable; running discovery: {e}")
     for route in report["routes"]:
       if time.monotonic() >= deadline:
         break
@@ -555,10 +659,32 @@ def scan(panda, args, dataset, known_targets, safety_model):
         if check["status"] == "fail":
           route["outcome"] = "skipped"
           continue
+      if args.fast and cache and identity is None and args.rx_addr is None:
+        saved_identity = cache["identity"]
+        target = cached_target(saved_identity["target"])
+        if (target.bus, target.obd) == (bus, obd):
+          vin_hash = read_vin_hash(transport, target, bytes.fromhex(saved_identity["request"]))
+          if vin_hash == saved_identity["vin_hash"]:
+            identity = saved_identity
+          else:
+            report["warnings"].append("Cached vehicle could not be verified or has changed; running discovery.")
+      cached_route = next((r for r in cache["routes"] if (r["bus"], r["obd_multiplexing"]) == (bus, obd)), None) if cache else None
+      use_cache = args.fast and identity is not None and cache is not None and identity["vin_hash"] == cache["identity"]["vin_hash"]
+      items = cached_route["targets"] if cached_route is not None else []
+      cached_found = {cached_target(t) for t in items if args.addr is None or
+                      (int(t["tx_address"], 16) == args.addr and (args.subaddress is None or t["subaddress"] == args.subaddress))}
       if args.rx_addr is not None:
+        route["source"] = "explicit"
         found = {Target(args.addr, args.rx_addr, bus, obd, args.subaddress)}
         emissions = found
+      elif use_cache and cached_route is not None and (args.addr is None or cached_found):
+        route.update(source="cache", cached_at=cached_route["scanned_at"])
+        found = cached_found
+        emissions = {cached_target(t) for t in items if t["emissions"]} & found
+        report["cache"]["routes_reused"] += 1
+        print(f"Using {len(found)} cached modules on bus {bus} ({'OBD port' if obd else 'harness'}); reading fresh faults…", file=sys.stderr)
       else:
+        route["source"] = "discovery"
         probes = selected_probes(args, known_targets, bus, obd)
         print(f"Learning ECU reply addresses on bus {bus} ({'OBD port' if obd else 'harness'}; {len(probes)} probes)…", file=sys.stderr)
         found, emissions, discovery = discover(panda, probes, bus, obd, deadline, args.probe_timeout, args.timeout)
@@ -583,11 +709,32 @@ def scan(panda, args, dataset, known_targets, safety_model):
           raise RuntimeError(result["error"])
       if time.monotonic() < deadline:
         route["outcome"] = "finished"
+        if (route["source"] == "discovery" and args.addr is None and not discovery["not_probed"] and
+            not discovery["unconfirmed"] and not discovery["ambiguous"]):
+          if identity is None:
+            identity = find_vehicle_identity(panda, found, args.timeout, deadline)
+          refreshed.append({"bus": bus, "obd_multiplexing": obd, "scanned_at": report["started_at"],
+                            "targets": [{**target.as_dict(), "emissions": target in emissions} for target in sorted(found, key=target_key)]})
   except KeyboardInterrupt:
     report["errors"].append("Scan interrupted; retained completed ECU results")
   except Exception as e:
     report["errors"].append(f"{type(e).__name__}: {e}")
   report["deadline_reached"] = time.monotonic() >= deadline
+  # Interrupted, targeted, and deadline-limited scans must not replace a usable inventory.
+  if refreshed and identity and not report["errors"] and not report["deadline_reached"]:
+    previous = cache["routes"] if cache and cache["identity"]["vin_hash"] == identity["vin_hash"] else []
+    merged = {(r["bus"], r["obd_multiplexing"]): r for r in previous + refreshed}
+    try:
+      save_module_cache(cache_path, {"version": 1, "identity": identity, "routes": list(merged.values())})
+      report["cache"]["updated"] = True
+    except KeyboardInterrupt:
+      report["errors"].append("Cache update interrupted; retained completed ECU results")
+    except OSError as e:
+      report["warnings"].append(f"Could not save module cache: {e}")
+  if refreshed and identity is None:
+    report["warnings"].append("No live VIN available; module cache not updated. --fast requires a verified vehicle and will rediscover it.")
+  if report["cache"]["routes_reused"]:
+    report["warnings"].append("Fast scan checks cached modules only on reused routes; run without --fast to discover new or previously missed modules.")
   report["elapsed_seconds"] = round(time.monotonic() - started, 3)
   if not any(ecu["dtc_read"] for ecu in report["ecus"]):
     report["status"] = "failed"
@@ -639,8 +786,11 @@ def make_parser():
   parser.add_argument("--addr", type=lambda value: int(value, 0), help="target a physical ECU address instead of auto-scanning")
   parser.add_argument("--rx-addr", type=lambda value: int(value, 0), help="explicit reply address, e.g. VW tx + 0x6a")
   parser.add_argument("--subaddress", type=lambda value: int(value, 0), help="ISO-TP subaddress")
-  parser.add_argument("--bus", type=int, choices=(0, 1, 2), action="append", help="repeat to select buses; default: all, or bus 1 for targeting")
-  parser.add_argument("--obd", choices=("auto", "on", "off"), default="auto", help="bus 1 OBD multiplexing; auto tries both routes")
+  parser.add_argument("--broad", action="store_true", help="scan harness routes as well as OBD (default: OBD only)")
+  parser.add_argument("--fast", action="store_true", help="reuse vehicle-verified cached modules; discover routes without a usable cache")
+  parser.add_argument("--bus", type=int, choices=(0, 1, 2), action="append",
+                      help="override buses; repeat to select several (default: 1, or 1/0/2 with --broad)")
+  parser.add_argument("--obd", choices=("auto", "on", "off"), help="override bus 1 routing: auto tries both (default: on, or auto with --broad)")
   parser.add_argument("--serial", help="Panda serial (required if several are connected)")
   parser.add_argument("--details", action="store_true", help="read ECU identifiers, UDS raw snapshots/extended records and OBD freeze frame zero")
   parser.add_argument("--max-details", type=int, default=16, help="maximum UDS codes per ECU for detail retrieval (default: 16)")

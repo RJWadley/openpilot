@@ -8,6 +8,9 @@ From the openpilot checkout on the comma:
 
 ```sh
 python tools/scripts/car/diagnose.py
+python tools/scripts/car/diagnose.py --fast
+python tools/scripts/car/diagnose.py --broad
+python tools/scripts/car/diagnose.py --broad --fast
 python tools/scripts/car/diagnose.py --details
 python tools/scripts/car/diagnose.py --details --json > diagnosis.json
 ```
@@ -67,11 +70,49 @@ python tools/scripts/car/diagnose.py --addr 0x715 --rx-addr 0x77f --bus 1
 python tools/scripts/car/diagnose.py --addr 0x750 --subaddress 0x0f --bus 0 --obd off
 ```
 
-Default discovery scans buses 1, 0, and 2, trying both bus-1 OBD multiplexing
-states. `--bus` is repeatable. When targeting, the default bus is 1; known opendbc
+Default discovery scans **only bus 1 with OBD multiplexing on**. `--broad` also
+scans bus 1 with multiplexing off and harness buses 0 and 2. Harness access is
+opt-in; a disconnected OBD route does not automatically enable it.
+
+`--bus` is repeatable and overrides the selected buses, including with `--broad`.
+`--obd` overrides bus-1 routing: `on` selects OBD, `off` selects the harness, and
+`auto` tries both. Targeting keeps these same route defaults. Known opendbc
 subaddress hints can add probes, but reply addresses are learned rather than
-guessed. Supplying `--rx-addr` bypasses discovery for that explicit pair.
+guessed. Supplying `--rx-addr` bypasses discovery and the module cache for that explicit pair.
 `--serial` selects one Panda when multiple are connected.
+
+## Fast scans and the module cache
+
+A completed, untargeted discovery saves confirmed module addresses, routes,
+emissions capability, and discovery timestamps. It does **not** save fault codes.
+`--fast` reuses that inventory and reads fresh faults from every cached target
+on the selected routes. `--fast --broad` includes cached harness routes too;
+`--fast` alone stays OBD-only even if the cache came from a broad scan.
+
+Before reusing an inventory, the scanner reads the VIN from the car again using
+UDS DID `0xF190` or OBD mode `09`, PID `02`, and compares its hash with the cached
+vehicle identity. It does not trust openpilot's saved `CarVin` parameter or the
+Panda serial as vehicle identification. Only the VIN hash is saved, not the raw VIN.
+If VIN verification is unavailable, the vehicle changed, the cache is missing or
+invalid, or a selected route was not cached, that route uses normal discovery.
+A first run with `--fast` therefore still performs discovery.
+
+The latest vehicle's cache lives at `/data/diagnostics/modules.json` on a comma,
+or `~/.cache/openpilot/diagnostics/modules.json` on a PC. It survives reboots and
+is atomically replaced. Interrupted, deadline-limited, targeted, or ambiguous
+discovery does not replace that route's cached inventory. A failed cache read
+or write is reported without discarding diagnostic results. A new vehicle's
+inventory replaces the previous vehicle's; narrower scans of the same vehicle
+preserve previously cached routes outside the selected scope.
+
+Cached modules that no longer respond are reported as unavailable, not healthy.
+New or previously missed modules will not appear on reused routes: run without
+`--fast` to refresh discovery. Even a completed discovery is only best-effort,
+not proof of a complete vehicle inventory. JSON reports include `cache` metadata
+and each route's `source` (`discovery`, `cache`, or `explicit`); cached routes
+also include their original `cached_at` timestamp.
+
+## Discovery
 
 Discovery combines:
 

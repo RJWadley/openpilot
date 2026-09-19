@@ -2,8 +2,10 @@ import contextlib
 import io
 import json
 import sys
+import tempfile
 import time
 import unittest
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -347,7 +349,15 @@ class TestTransport(unittest.TestCase):
     self.assertEqual(panda.sent, [])
 
 
-class TestScanning(unittest.TestCase):
+class IsolatedCacheTest(unittest.TestCase):
+  def setUp(self):
+    directory = tempfile.TemporaryDirectory()
+    self.addCleanup(directory.cleanup)
+    self.cache_path = Path(directory.name) / "modules.json"
+    self.enterContext(patch.object(d, "module_cache_path", return_value=self.cache_path))
+
+
+class TestScanning(IsolatedCacheTest):
   def test_auto_scan_twenty_nonstandard_pairs_without_brand_metadata(self):
     targets = {d.Target(0x700 + i, 0x76A + i, obd=False) for i in range(20)}
     panda = FakePanda({target: {b"\x19\x02\xff": bytes.fromhex("5902ff80011389")} for target in targets})
@@ -501,7 +511,305 @@ class TestScanning(unittest.TestCase):
     json.dumps(report)
 
 
-class TestCLI(unittest.TestCase):
+class TestRoutesAndCache(IsolatedCacheTest):
+  engine = d.Target(0x7E0, 0x7E8)
+  airbag = d.Target(0x715, 0x77F)
+  vin = b"WVWZZZAUZGW000001"
+
+  def ecus(self, vin=None):
+    return {self.engine: {b"\x22\xf1\x90": b"\x62\xf1\x90" + (vin or self.vin), b"\x19\x02\xff": b"\x59\x02\xff",
+                          b"\x01\x00": bytes.fromhex("410000000000")},
+            self.airbag: {b"\x19\x02\xff": bytes.fromhex("5902ff90161488")}}
+
+  def run_scan(self, argv=(), ecus=None, panda=None):
+    panda = panda or FakePanda(self.ecus() if ecus is None else ecus)
+    args = d.make_parser().parse_args(list(argv))
+    clock = FakeClock()
+    with patch.object(d, "generic_probes", return_value={(self.engine.tx, None), (self.airbag.tx, None)}), \
+         patch.object(d.time, "monotonic", side_effect=clock.monotonic), patch.object(d.time, "sleep", side_effect=clock.sleep), \
+         contextlib.redirect_stderr(io.StringIO()):
+      report = d.scan(panda, args, {}, {}, SAFETY)
+    return report, panda
+
+  def test_route_selection_and_explicit_overrides(self):
+    for argv, routes in (
+      ([], [(1, True)]),
+      (["--fast"], [(1, True)]),
+      (["--broad"], [(1, True), (1, False), (0, False), (2, False)]),
+      (["--addr", "0x715"], [(1, True)]),
+      (["--obd", "auto"], [(1, True), (1, False)]),
+      (["--broad", "--bus", "0"], [(0, False)]),
+      (["--broad", "--obd", "on"], [(1, True), (0, False), (2, False)]),
+      (["--bus", "2", "--bus", "0", "--bus", "2"], [(2, False), (0, False)]),
+    ):
+      with self.subTest(argv=argv):
+        self.assertEqual(d.selected_routes(d.make_parser().parse_args(argv)), routes)
+
+  def test_default_scan_saves_only_obd_addresses_not_faults_or_raw_vin(self):
+    report, panda = self.run_scan()
+    self.assertEqual(panda.safety_modes, [(SAFETY.elm327, 0)])
+    self.assertTrue(report["cache"]["updated"])
+    cache = d.load_module_cache(self.cache_path)
+    self.assertEqual(len(cache["routes"]), 1)
+    self.assertEqual({d.cached_target(t) for t in cache["routes"][0]["targets"]}, {self.engine, self.airbag})
+    contents = self.cache_path.read_text()
+    self.assertNotIn("901614", contents)
+    self.assertNotIn(self.vin.decode(), contents)
+    self.assertFalse(report["vehicle_coverage_complete"])
+
+  def test_fast_reads_fresh_faults_without_discovery(self):
+    self.run_scan()
+    ecus = self.ecus()
+    ecus[self.airbag][b"\x19\x02\xff"] = bytes.fromhex("5902ff92250120")
+    with patch.object(d, "discover", side_effect=AssertionError("Must reuse cached targets")):
+      report, panda = self.run_scan(["--fast"], ecus)
+    self.assertEqual(report["cache"]["routes_reused"], 1)
+    self.assertEqual(report["discovery"], [])
+    self.assertEqual(report["ecus"][0]["codes"][0]["raw_dtc"], "922501")
+    self.assertFalse(any(request == b"\x3e\x00" for _, request in panda.requests))
+    self.assertIn((self.engine, b"\x22\xf1\x90"), panda.requests)
+    self.assertFalse(report["vehicle_coverage_complete"])
+
+  def test_broad_cache_includes_empty_routes_but_fast_alone_stays_obd_only(self):
+    ecus = self.ecus()
+    ecus[d.Target(0x715, 0x77F, bus=0, obd=False)] = ecus[self.airbag]
+    self.run_scan(["--broad"], ecus)
+    with patch.object(d, "discover", side_effect=AssertionError("All routes cached")):
+      narrow, panda = self.run_scan(["--fast"], ecus)
+      broad, _ = self.run_scan(["--fast", "--broad"], ecus)
+    self.assertEqual(panda.safety_modes, [(SAFETY.elm327, 0)])
+    self.assertEqual(len(narrow["ecus"]), 2)
+    self.assertEqual(len(broad["ecus"]), 3)
+    self.assertEqual(broad["cache"]["routes_reused"], 4)
+
+  def test_fast_broad_discovers_routes_missing_from_obd_cache(self):
+    self.run_scan()
+    report, _ = self.run_scan(["--fast", "--broad"])
+    self.assertEqual(report["cache"]["routes_reused"], 1)
+    self.assertEqual(len(report["discovery"]), 3)
+    self.assertEqual(len(d.load_module_cache(self.cache_path)["routes"]), 4)
+
+  def test_narrow_refresh_preserves_previously_cached_harness_routes(self):
+    self.run_scan(["--broad"])
+    report, _ = self.run_scan()
+    self.assertTrue(report["cache"]["updated"])
+    self.assertEqual(len(d.load_module_cache(self.cache_path)["routes"]), 4)
+
+  def test_transient_vin_failure_preserves_other_routes_after_same_vehicle_is_verified(self):
+    self.run_scan(["--broad"])
+    ecus = self.ecus()
+    replies = iter([None, b"\x62\xf1\x90" + self.vin])
+    ecus[self.engine][b"\x22\xf1\x90"] = lambda request: next(replies)
+    report, _ = self.run_scan(["--fast"], ecus)
+    self.assertEqual(report["cache"]["routes_reused"], 0)
+    self.assertTrue(report["cache"]["updated"])
+    self.assertEqual(len(d.load_module_cache(self.cache_path)["routes"]), 4)
+
+  def test_missing_cache_falls_back_and_populates_cache(self):
+    report, _ = self.run_scan(["--fast"])
+    self.assertEqual(report["cache"]["routes_reused"], 0)
+    self.assertTrue(report["cache"]["updated"])
+    self.assertEqual(len(report["ecus"]), 2)
+    self.assertTrue(any("No module cache" in w for w in report["warnings"]))
+
+  def test_vehicle_change_discovers_and_discards_other_vehicle_routes(self):
+    self.run_scan(["--broad"])
+    previous = d.load_module_cache(self.cache_path)["identity"]["vin_hash"]
+    report, _ = self.run_scan(["--fast"], self.ecus(b"WVWZZZAUZGW000002"))
+    cache = d.load_module_cache(self.cache_path)
+    self.assertEqual(report["cache"]["routes_reused"], 0)
+    self.assertEqual(len(report["discovery"]), 1)
+    self.assertNotEqual(cache["identity"]["vin_hash"], previous)
+    self.assertEqual(len(cache["routes"]), 1)
+
+  def test_unreadable_or_invalid_vin_falls_back_without_overwriting_cache(self):
+    self.run_scan()
+    previous = self.cache_path.read_bytes()
+    for vin in (None, b"", b"0" * 17, b"I" * 17, b"\xff" * 17):
+      with self.subTest(vin=vin):
+        ecus = self.ecus()
+        ecus[self.engine][b"\x22\xf1\x90"] = None if vin is None else b"\x62\xf1\x90" + vin
+        report, _ = self.run_scan(["--fast"], ecus)
+        self.assertEqual(report["cache"]["routes_reused"], 0)
+        self.assertEqual(len(report["discovery"]), 1)
+        self.assertEqual(self.cache_path.read_bytes(), previous)
+
+  def test_obd_vin_fallback_is_cached_and_verified(self):
+    ecus = self.ecus()
+    del ecus[self.engine][b"\x22\xf1\x90"]
+    ecus[self.engine][b"\x09\x02"] = b"\x49\x02\x01" + self.vin
+    self.run_scan(ecus=ecus)
+    self.assertEqual(d.load_module_cache(self.cache_path)["identity"]["request"], "0902")
+    report, panda = self.run_scan(["--fast"], ecus)
+    self.assertEqual(report["cache"]["routes_reused"], 1)
+    self.assertTrue(all(d.read_request(request) for _, request in panda.requests))
+
+  def test_corrupt_cache_falls_back_without_breaking_diagnostics(self):
+    for data in ("not json", "null", "[]", '{"version":99}', '{"version":1,"routes":[]}'):
+      with self.subTest(data=data):
+        self.cache_path.write_text(data)
+        report, _ = self.run_scan(["--fast"])
+        self.assertEqual(report["status"], "partial")
+        self.assertTrue(report["cache"]["updated"])
+        self.assertEqual(report["cache"]["routes_reused"], 0)
+
+  def test_unsafe_or_ambiguous_cached_addresses_are_not_used(self):
+    self.run_scan()
+    good = self.cache_path.read_text()
+    for change in ("request", "address", "bus", "subaddress", "duplicate"):
+      with self.subTest(change=change):
+        cache = json.loads(good)
+        item = cache["routes"][0]["targets"][0]
+        if change == "request":
+          cache["identity"]["request"] = "2701"
+        elif change == "address":
+          item["tx_address"] = "0x123"
+        elif change == "bus":
+          item["bus"] = 2
+        elif change == "subaddress":
+          item["subaddress"] = 256
+        else:
+          cache["routes"][0]["targets"].append(dict(item, rx_address="0x780"))
+        self.cache_path.write_text(json.dumps(cache))
+        report, panda = self.run_scan(["--fast"])
+        self.assertEqual(report["cache"]["routes_reused"], 0)
+        self.assertTrue(all(d.read_request(request) for _, request in panda.requests))
+        self.assertFalse(any(tx == 0x123 for tx, _, _ in panda.sent))
+
+  def test_targeted_or_explicit_scan_preserves_full_cache(self):
+    self.run_scan()
+    previous = self.cache_path.read_bytes()
+    for argv in (["--addr", "0x715"], ["--fast", "--addr", "0x715"], ["--fast", "--addr", "0x715", "--rx-addr", "0x77f"]):
+      with self.subTest(argv=argv):
+        report, _ = self.run_scan(argv)
+        self.assertEqual(len(report["ecus"]), 1)
+        self.assertEqual(report["ecus"][0]["tx_address"], "0x715")
+        self.assertEqual(self.cache_path.read_bytes(), previous)
+
+  def test_fast_preserves_emissions_and_zero_subaddress(self):
+    extended = d.Target(0x18DA10F1, 0x18DAF110)
+    sub = d.Target(0x750, 0x758, subaddress=0)
+    ecus = self.ecus()
+    ecus[extended] = {b"\x01\x00": bytes.fromhex("410000000000"), b"\x03": bytes.fromhex("43010301")}
+    ecus[sub] = {b"\x19\x02\xff": b"\x59\x02\xff"}
+    with patch.object(d, "selected_probes", return_value={(t.tx, t.subaddress) for t in ecus}):
+      self.run_scan(ecus=ecus)
+    with patch.object(d, "discover", side_effect=AssertionError("Must reuse cached targets")):
+      report, panda = self.run_scan(["--fast"], ecus)
+    self.assertIn((extended, b"\x03"), panda.requests)
+    self.assertIn((sub, b"\x19\x02\xff"), panda.requests)
+    self.assertTrue(any(ecu["subaddress"] == 0 for ecu in report["ecus"]))
+    targeted, _ = self.run_scan(["--fast", "--addr", "0x750", "--subaddress", "0"], ecus)
+    self.assertEqual(len(targeted["ecus"]), 1)
+    self.assertEqual(targeted["ecus"][0]["subaddress"], 0)
+
+  def test_unconfirmed_discovery_does_not_replace_cache(self):
+    self.run_scan()
+    previous = self.cache_path.read_bytes()
+    ecus = self.ecus()
+    ecus[self.airbag] = {b"\x22\xf1\x97": None, b"\x19\x02\xff": None}
+    report, _ = self.run_scan(ecus=ecus)
+    self.assertTrue(report["discovery"][0]["unconfirmed"])
+    self.assertFalse(report["cache"]["updated"])
+    self.assertEqual(self.cache_path.read_bytes(), previous)
+
+  def test_fast_keeps_ignition_and_obd_preflight(self):
+    self.run_scan()
+    panda = FakePanda(self.ecus())
+    panda.health_data["ignition_line"] = False
+    report, _ = self.run_scan(["--fast"], panda=panda)
+    self.assertTrue(report["setup_error"])
+    self.assertFalse(panda.sent)
+    panda = FakePanda(self.ecus())
+    panda.obd_disconnected = True
+    report, _ = self.run_scan(["--fast"], panda=panda)
+    self.assertEqual(report["routes"][0]["outcome"], "skipped")
+    self.assertEqual(report["cache"]["routes_reused"], 0)
+    self.assertFalse(report["ecus"])
+
+  def test_silent_cached_module_remains_unavailable_not_clean(self):
+    self.run_scan()
+    ecus = self.ecus()
+    del ecus[self.airbag]
+    report, _ = self.run_scan(["--fast"], ecus)
+    self.assertEqual(report["ecus"][0]["tx_address"], "0x715")
+    self.assertFalse(report["ecus"][0]["dtc_read"])
+    self.assertEqual(report["ecus"][0]["queries"][0]["outcome"], "timeout")
+    self.assertFalse(report["cache"]["updated"])
+
+  def test_deadline_interrupt_or_disconnection_preserves_cache(self):
+    self.run_scan()
+    previous = self.cache_path.read_bytes()
+    for failure in ("deadline", "interrupt", "disconnected"):
+      with self.subTest(failure=failure):
+        panda = FakePanda(self.ecus())
+        argv = []
+        if failure == "deadline":
+          argv = ["--scan-timeout", "0.35"]
+        elif failure == "interrupt":
+          def interrupt(request):
+            raise KeyboardInterrupt
+          panda.ecus[self.airbag][b"\x19\x02\xff"] = interrupt
+        else:
+          panda.obd_disconnected = True
+        report, _ = self.run_scan(argv, panda=panda)
+        self.assertFalse(report["cache"]["updated"])
+        self.assertEqual(self.cache_path.read_bytes(), previous)
+
+  def test_cache_write_failure_is_warning_not_scan_failure(self):
+    with patch.object(d, "save_module_cache", side_effect=OSError("disk full")):
+      report, _ = self.run_scan()
+    self.assertEqual(report["status"], "partial")
+    self.assertFalse(report["errors"])
+    self.assertTrue(any("disk full" in w for w in report["warnings"]))
+
+  def test_interrupt_during_cache_save_retains_faults_and_previous_cache(self):
+    self.run_scan()
+    previous = self.cache_path.read_bytes()
+    with patch.object(d, "save_module_cache", side_effect=KeyboardInterrupt):
+      report, _ = self.run_scan()
+    self.assertEqual(report["status"], "partial")
+    self.assertEqual(report["ecus"][0]["codes"][0]["raw_dtc"], "901614")
+    self.assertEqual(self.cache_path.read_bytes(), previous)
+    self.assertFalse(report["cache"]["updated"])
+
+  def test_fast_cli_json_and_cleanup_even_on_transport_failure_or_interrupt(self):
+    self.run_scan()
+    previous = self.cache_path.read_bytes()
+    for failure in (None, OSError("disconnected"), KeyboardInterrupt()):
+      with self.subTest(failure=failure):
+        panda = FakePanda(self.ecus())
+        if failure:
+          def fail(request, error=failure):
+            raise error
+          panda.ecus[self.airbag][b"\x19\x02\xff"] = fail
+        factory = unittest.mock.Mock(return_value=panda)
+        factory.list.return_value = ["simulated"]
+        clock = FakeClock()
+        with patch.dict(sys.modules, {"panda": SimpleNamespace(Panda=factory)}), \
+             patch.object(d, "check_pandad"), patch.object(d, "load_known_targets", return_value={}), \
+             patch.object(d.time, "monotonic", side_effect=clock.monotonic), patch.object(d.time, "sleep", side_effect=clock.sleep), \
+             contextlib.redirect_stdout(io.StringIO()) as out, contextlib.redirect_stderr(io.StringIO()):
+          status = d.main(["--fast", "--json"])
+        report = json.loads(out.getvalue())
+        self.assertEqual(report["cache"]["routes_reused"], 1)
+        self.assertEqual(report["discovery"], [])
+        self.assertEqual(status, 1 if failure else 0)
+        self.assertEqual(panda.safety_modes[-1], (SAFETY.noOutput, 0))
+        self.assertTrue(panda.closed)
+        self.assertEqual(self.cache_path.read_bytes(), previous)
+
+  def test_failed_atomic_replace_preserves_original_and_cleans_temporary_file(self):
+    self.run_scan()
+    previous = self.cache_path.read_bytes()
+    with patch.object(Path, "replace", side_effect=OSError("disk error")):
+      report, _ = self.run_scan()
+    self.assertFalse(report["cache"]["updated"])
+    self.assertEqual(self.cache_path.read_bytes(), previous)
+    self.assertEqual(list(self.cache_path.parent.iterdir()), [self.cache_path])
+
+
+class TestCLI(IsolatedCacheTest):
   def run_with_panda(self, panda):
     factory = unittest.mock.Mock(return_value=panda)
     factory.list.return_value = ["simulated"]
@@ -604,7 +912,7 @@ class TestCLI(unittest.TestCase):
     self.assertNotIn("P1234", data["labels"])
 
 
-class TestPreflight(unittest.TestCase):
+class TestPreflight(IsolatedCacheTest):
   def test_either_ignition_source_is_sufficient(self):
     panda = FakePanda({})
     panda.health_data.update(ignition_line=False, ignition_can=True, car_harness_status=2)
