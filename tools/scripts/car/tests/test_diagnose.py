@@ -14,6 +14,9 @@ from tools.scripts.car import diagnose as d
 
 
 SAFETY = CarParams.SafetyModel
+MISFIRE_ENTRY = {"code": "P0301", "title": {"en": "Cylinder 1 Misfire Detected", "de": "Fehlzündung Zylinder 1"},
+                 "description": {"en": "Example explanation", "de": "Beispiel"}, "common_causes": [{"label": {"en": "Example cause"}}],
+                 "repair": {"estimated_cost_eur": [10, 100]}, "sources": ["https://example.com/reference"]}
 
 
 class FakePanda:
@@ -287,6 +290,20 @@ class TestDecoding(unittest.TestCase):
     with self.assertRaises(ValueError):
       d.parse_uds_count(b"\xff\x04")
 
+  def test_uds_filters_only_non_fault_statuses(self):
+    for status in range(256):
+      with self.subTest(status=status):
+        records = d.parse_uds_codes(b"\xff\x90\x16\x14" + bytes([status]), None)
+        self.assertEqual(bool(records), bool(status & 0xAF))
+        if records:
+          self.assertEqual(records[0]["status_byte"], status)
+
+  def test_uds_filter_respects_supported_bits_and_retains_history(self):
+    self.assertEqual(d.parse_uds_codes(bytes.fromhex("50 901614 ff"), None), [])
+    for status in (0x01, 0x02, 0x04, 0x08, 0x20, 0x80):
+      with self.subTest(status=status):
+        self.assertEqual(len(d.parse_uds_codes(b"\xff\x90\x16\x14" + bytes([status]), None)), 1)
+
   def test_freeze_frame_units(self):
     self.assertEqual(d.parse_freeze_value(0x0C, bytes.fromhex("1f40"))["value"], 2000)
     self.assertEqual(d.parse_freeze_value(0x05, b"\x64")["value"], 60)
@@ -396,7 +413,7 @@ class TestScanning(IsolatedCacheTest):
     panda = FakePanda({engine: {b"\x03": bytes.fromhex("43010301"), b"\x01\x00": bytes.fromhex("410000000000")}, airbag: {}})
     args = d.make_parser().parse_args(["--bus", "1", "--obd", "on", "--timeout", "0.02"])
     with patch.object(d, "generic_probes", return_value={(engine.tx, None), (airbag.tx, None)}), contextlib.redirect_stderr(io.StringIO()):
-      report = d.scan(panda, args, {"labels": {"P0301": "Cylinder 1 Misfire Detected"}}, {}, SAFETY)
+      report = d.scan(panda, args, {"entries": {"P0301": MISFIRE_ENTRY}}, {}, SAFETY)
     self.assertEqual(report["status"], "partial")
     self.assertFalse(report["vehicle_coverage_complete"])
     results = {ecu["tx_address"]: ecu for ecu in report["ecus"]}
@@ -404,6 +421,7 @@ class TestScanning(IsolatedCacheTest):
     code = results["0x7e0"]["codes"][0]
     self.assertEqual(code["code"], "P0301")
     self.assertIn("lookup", code)
+    self.assertEqual(code["lookup"]["entry"], MISFIRE_ENTRY)
     json.dumps(report)
 
   def test_extended_session_only_on_demand_and_restored(self):
@@ -423,9 +441,83 @@ class TestScanning(IsolatedCacheTest):
   def test_unknown_format_preserves_code_without_false_label(self):
     target = d.Target(0x715, 0x77F)
     panda = FakePanda({target: {b"\x19\x02\xff": bytes.fromhex("5902ff80011389")}})
-    result = d.query_ecu(transport(panda), target, {"B0001": "Example"})
+    result = d.query_ecu(transport(panda), target, {"B0001": {"title": {"en": "Example"}}})
     self.assertEqual(result["codes"][0]["code"], "0x800113")
     self.assertNotIn("lookup", result["codes"][0])
+
+  def test_unmapped_airbag_gets_lossless_decimal_and_real_ecu_context(self):
+    target = d.Target(0x715, 0x77F)
+    panda = FakePanda({target: {b"\x19\x02\xff": bytes.fromhex("5902ff9016148992250110"),
+                                b"\x22\xf1\x87": b"\x62\xf1\x875Q0959655J ",
+                                b"\x22\xf1\x97": b"\x62\xf1\x97AirbagVW20   "}})
+    result = d.query_ecu(transport(panda), target, {})
+    self.assertEqual(len(result["codes"]), 1)
+    code = result["codes"][0]
+    self.assertEqual(code["code"], "0x901614")
+    self.assertEqual(code["display_code"], "9442836 (0x901614)")
+    self.assertEqual(code["search"], {"codes": ["9442836", "0x901614"], "query": "9442836 AirbagVW20 5Q0959655J"})
+    self.assertNotIn("B1016", json.dumps(code))
+    self.assertEqual(result["ignored_non_fault_records"], 1)
+    self.assertEqual(result["identity"]["part_number"], "5Q0959655J")
+    self.assertFalse(any(request[:2] in (b"\x19\x04", b"\x19\x06") for _, request in panda.requests))
+
+  def test_verified_format_keeps_searchable_standard_code_and_failure_type(self):
+    target = d.Target(0x715, 0x77F)
+    panda = FakePanda({target: {b"\x19\x02\xff": bytes.fromhex("5902ff90161489"),
+                                b"\x19\x01\xff": bytes.fromhex("5901ff040001")}})
+    code = d.query_ecu(transport(panda), target, {})["codes"][0]
+    self.assertEqual(code["code"], "B1016")
+    self.assertEqual(code["display_code"], "B1016-14")
+    self.assertEqual(code["search"]["codes"], ["B1016 14", "B101614", "B1016", "9442836", "0x901614"])
+
+  def test_obdex_full_entry_is_separate_from_vehicle_status_and_not_duplicated_in_query(self):
+    target = d.Target(0x7E0, 0x7E8)
+    panda = FakePanda({target: {b"\x03": bytes.fromhex("43010301")}})
+    result = d.query_ecu(transport(panda), target, {"P0301": MISFIRE_ENTRY}, obd=True)
+    code = result["codes"][0]
+    self.assertEqual(code["lookup"]["entry"], MISFIRE_ENTRY)
+    self.assertEqual(code["status"], ["stored"])
+    self.assertNotIn("search", code)
+    query = next(q for q in result["queries"] if q["name"] == "obd_stored")
+    self.assertNotIn("lookup", query["data"][0])
+    with contextlib.redirect_stdout(io.StringIO()) as out:
+      d.print_report({"status": "partial", "ecus": [result], "errors": []})
+    for text in ("Example explanation", "Example cause", "estimated_cost_eur", "https://example.com/reference", "Fehlzündung"):
+      self.assertIn(text, out.getvalue())
+
+  def test_non_faults_are_ignored_before_applying_detail_limit(self):
+    target = d.Target(0x715, 0x77F)
+    records = b"".join(i.to_bytes(3, "big") + b"\x10" for i in range(20)) + bytes.fromhex("90161489")
+    panda = FakePanda({target: {b"\x19\x02\xff": b"\x59\x02\xff" + records}})
+    result = d.query_ecu(transport(panda), target, {}, details=True, max_details=1)
+    self.assertEqual(result["ignored_non_fault_records"], 20)
+    self.assertEqual(result["details_omitted"], 0)
+    self.assertEqual([c["code"] for c in result["codes"]], ["0x901614"])
+    requests = [request for _, request in panda.requests if request[:2] in (b"\x19\x04", b"\x19\x06")]
+    self.assertEqual(requests, [bytes.fromhex("1904901614ff"), bytes.fromhex("1906901614ff")])
+    query = next(q for q in result["queries"] if q["name"] == "uds_codes")
+    self.assertEqual(len(query["data"]), 1)
+    self.assertEqual(query["responses"], [(b"\x59\x02\xff" + records).hex()])
+
+  def test_only_non_fault_records_produce_no_fault_details(self):
+    target = d.Target(0x715, 0x77F)
+    panda = FakePanda({target: {b"\x19\x02\xff": bytes.fromhex("5902ff92250110902501409025125090251300")}})
+    result = d.query_ecu(transport(panda), target, {}, details=True)
+    self.assertTrue(result["dtc_read"])
+    self.assertEqual(result["codes"], [])
+    self.assertEqual(result["ignored_non_fault_records"], 4)
+    self.assertFalse(any(request[:2] in (b"\x19\x04", b"\x19\x06") for _, request in panda.requests))
+
+  def test_unknown_engine_code_is_not_guessed_from_an_obd_match(self):
+    target = d.Target(0x7E0, 0x7E8)
+    panda = FakePanda({target: {b"\x19\x02\xff": bytes.fromhex("5902ff003c5e2f"), b"\x03": bytes.fromhex("43010202")}})
+    entry = {"code": "P0202", "title": {"en": "Injector Circuit Malfunction — Cylinder 2"}}
+    result = d.query_ecu(transport(panda), target, {"P0202": entry}, obd=True)
+    unknown, matched = result["codes"]
+    self.assertEqual(unknown["display_code"], "15454 (0x003C5E)")
+    self.assertEqual(unknown["search"]["codes"], ["15454", "0x003C5E"])
+    self.assertNotIn("lookup", unknown)
+    self.assertEqual(matched["lookup"]["entry"], entry)
 
   def test_details_preserve_raw_records_and_correct_obd_frame(self):
     target = d.Target(0x7E0, 0x7E8)
@@ -821,7 +913,7 @@ class TestCLI(IsolatedCacheTest):
     self.assertEqual(panda.safety_modes[-1], (SAFETY.noOutput, 0))
     self.assertTrue(panda.closed)
     report = json.loads(out.getvalue())
-    self.assertEqual(report["schema_version"], 2)
+    self.assertEqual(report["schema_version"], 3)
     return status, report
 
   def test_json_output_and_cleanup(self):
@@ -905,11 +997,28 @@ class TestCLI(IsolatedCacheTest):
           d.main([option, value])
 
   def test_offline_dataset(self):
-    data = json.loads(d.DATASET.read_text())
-    self.assertEqual(len(data["labels"]), 9533)
+    data = d.load_dataset()
+    self.assertEqual(len(data["entries"]), 9533)
     self.assertEqual(data["revision"], "bc58b0eb7273226a1aabae98e956b70b8362bda1")
-    self.assertIn("Misfire", data["labels"]["P0301"])
-    self.assertNotIn("P1234", data["labels"])
+    self.assertIn("Misfire", data["entries"]["P0301"]["title"]["en"])
+    self.assertNotIn("P1234", data["entries"])
+    for field in ("description", "affected_components", "common_causes", "repair", "flags", "related_codes", "sources", "references"):
+      self.assertIn(field, data["entries"]["P0202"])
+    self.assertNotIn("symptoms", data["entries"]["P0202"])  # Absent upstream at the pinned revision; do not invent fields.
+
+  def test_corrupt_or_truncated_obdex_does_not_block_fault_reads(self):
+    path = self.cache_path.parent / "broken-obdex.json.gz"
+    for contents in (b"not gzip", d.gzip.compress(b"{}")[:-8], d.gzip.compress(b"not json")):
+      with self.subTest(contents=contents):
+        path.write_bytes(contents)
+        target = d.Target(0x7E0, 0x7E8)
+        panda = FakePanda({target: {b"\x03": bytes.fromhex("43010301")}})
+        with patch.object(d, "DATASET", path):
+          status, report = self.run_with_panda(panda)
+        self.assertEqual(status, 0)
+        self.assertEqual(report["ecus"][0]["codes"][0]["code"], "P0301")
+        self.assertNotIn("lookup", report["ecus"][0]["codes"][0])
+        self.assertTrue(any("Offline descriptions unavailable" in warning for warning in report["warnings"]))
 
 
 class TestPreflight(IsolatedCacheTest):

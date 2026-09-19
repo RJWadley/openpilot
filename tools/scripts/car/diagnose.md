@@ -154,11 +154,18 @@ module. See [the discovery research](diagnose-discovery-notes.md).
 - OBD modes 03, 07, and 0A: stored, pending, and permanent codes, plus mode-01
   check-engine-light/monitor status on emissions endpoints.
 - UDS service 19: DTCs and supported status bits. The DTC format is requested
-  before rendering a P/C/B/U code; otherwise the three-byte identifier stays hex.
+  before rendering a P/C/B/U code; otherwise the three-byte identifier stays raw.
+- Records without supported failure, pending, confirmed, failure-history, or
+  warning-indicator flags are omitted from `codes`. In particular, test-not-completed
+  flags alone are not faults. `ignored_non_fault_records` counts omitted UDS records;
+  the original response bytes remain available in `queries[].responses`.
 - `--details`: ECU identification, raw UDS snapshots and extended records, and
   supported OBD freeze-frame-zero values (load, coolant/intake temperature, RPM,
-  speed, and the associated DTC).
-- Optional descriptions from the bundled OBDex lookup table.
+  speed, and the associated DTC). The detail limit applies after filtering non-faults.
+- Full available OBDex entries under `lookup.entry`, with the source and English
+  title also available under `lookup.source` and `lookup.title`. Every upstream field,
+  translation, nested value, and reference is retained. The text report prints the
+  complete matched entry too. Missing upstream fields are not invented.
 
 An OBD category such as `stored` is not a synthesized UDS status byte. Duplicate
 codes from different protocols or routes retain their separate origins. UDS
@@ -167,6 +174,17 @@ without a description. ECU-specific snapshot/extended-record bodies remain raw;
 interpreting them requires the correct manufacturer definitions. Snapshot values
 are historical, not current sensor readings.
 
+For faults without OBDex entries, `display_code` and `search` provide copyable search
+forms. Known SAE codes retain their P/B/C/U notation and failure type. Unknown-format
+UDS codes include the complete raw integer in decimal and hexadecimal; no inferred
+SAE code or manufacturer mapping is used. For example, raw `0x901614` is also
+`9442836`, a form found in [VCDS scan logs](https://forums.ross-tech.com/index.php?threads/21439/).
+Unmapped faults trigger read-only ECU identification queries even without `--details`.
+Successful identifiers are exposed under `identity`; `search.query` combines the
+code with the ECU-reported component and part number when available, e.g.
+`9442836 AirbagVW20 5Q0959655J`. These searches are suggestions, not verified meanings.
+Raw `code`, `raw_dtc`, and reported `format` remain available independently.
+
 Only fixed read requests, tester-present, and default/extended diagnostic session
 selection are allowed. Extended sessions are entered only after a session-related
 rejection and a return to the default session is attempted afterward. There is no
@@ -174,10 +192,10 @@ code clearing, security unlocking, ECU reset, coding, or arbitrary-command optio
 
 ## JSON and incomplete scans
 
-`--json` emits one report on stdout, with progress/debug output on stderr. Version 2
+`--json` emits one report on stdout, with progress/debug output on stderr. Version 3
 contains:
 
-- `ecus`: physical addresses, route, identity candidates, decoded codes, and every
+- `ecus`: physical addresses, route, ECU-reported identity, identity candidates, filtered fault/history codes, and every
   attempted request with raw responses and its outcome.
 - `discovery`: observed replies and confirmation queries, `unanswered` request
   addresses/subaddresses (no invented reply address), `unconfirmed` candidate
@@ -188,8 +206,12 @@ contains:
   route also has its own connectivity `preflight`; an unavailable route is
   marked `skipped`.
 - `errors`, `warnings`, elapsed time, and whether the deadline was reached.
-- `description_database`: source revision/license; per-code `lookup` fields are
-  third-party descriptions, separate from vehicle-reported data.
+- `description_database`: source revision/license; per-code `lookup.entry` fields
+  are complete third-party reference entries, separate from vehicle-reported data.
+
+Compared with version 2, `codes` and decoded UDS query `data` exclude non-fault
+records, matched codes include full entries, and unmapped codes have search forms.
+Full entries are attached only to `codes`, not repeated in the decoded query data.
 
 `status: partial` means some DTC data was read. `status: failed` means none was
 read, or setup failed. `vehicle_coverage_complete` is always false: this scanner
@@ -210,7 +232,7 @@ work (default 600 seconds, increased from 120 for sequential discovery). Expect
 roughly 77 seconds of probe windows per full route, plus confirmations and fault
 reads; scanning all four routes can take several minutes. Progress is printed
 every 128 probes. Use `--bus 1 --obd on` for an OBD-port-only scan.
-`--max-details` limits detailed retrieval to 16 UDS codes per ECU by default;
+`--max-details` limits detailed retrieval to 16 UDS fault/history records per ECU by default;
 omitted details are counted. Increase these limits explicitly for slow ECUs or
 large reports.
 
@@ -229,15 +251,22 @@ implementation. Actual vehicle coverage still requires parked-car validation.
 
 ## Offline descriptions
 
-`data/obdex.json` contains 9,533 English code titles from
+`data/obdex.json.gz` contains 9,533 complete code entries from
 [OBDex](https://github.com/foerbsnavi/OBDex), pinned to commit
 `bc58b0eb7273226a1aabae98e956b70b8362bda1`. Upstream data is CC0-1.0; see
 `data/LICENSE-OBDEX`. The file records SHA-256 hashes of its upstream inputs.
 
-These are third-party labels, not verified diagnoses or repair recommendations.
-Manufacturer-specific definitions are not covered. Causes, likelihoods, and repair
-estimates are deliberately not included in the scanner's lookup table. Missing
-or unreadable descriptions do not prevent fault retrieval.
+The entries include available explanations, components, possible causes,
+likelihoods, symptoms, repair estimates, flags, and references. These are third-party
+reference data, not confirmed diagnoses or repair recommendations. For example,
+OBDex's `flags.mil` is not the live vehicle's warning-light state, and its repair
+estimate is not a quote for this car. Manufacturer-specific definitions are not
+covered, and not every entry supplies every optional field. Missing or unreadable
+reference data does not prevent fault retrieval.
+
+The former title-only `obdex.json` is superseded by the compressed complete dataset.
+Compression is deterministic, and the updater verifies every pinned source hash
+and the full JSON round trip. Runtime decompression uses Python's standard library.
 
 To regenerate the table, use `python tools/scripts/car/data/update_obdex.py` in an
 environment that already has PyYAML. This maintenance step downloads only the
@@ -248,5 +277,5 @@ Run the hardware-independent tests from the checkout with its normal Python
 environment:
 
 ```sh
-python -m unittest tools.scripts.car.tests.test_diagnose
+python -m unittest tools.scripts.car.tests.test_diagnose tools.scripts.car.tests.test_update_obdex
 ```

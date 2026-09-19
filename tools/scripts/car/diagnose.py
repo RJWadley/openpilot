@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Read OBD-II/UDS faults on a parked vehicle with openpilot stopped. See diagnose.md."""
 import argparse
+import gzip
 import hashlib
 import json
 import math
@@ -16,12 +17,14 @@ from functools import partial
 from pathlib import Path
 
 
-DATASET = Path(__file__).with_name("data") / "obdex.json"
+DATASET = Path(__file__).with_name("data") / "obdex.json.gz"
 STATUS_BITS = (
   "test_failed", "test_failed_this_operation_cycle", "pending", "confirmed",
   "test_not_completed_since_last_clear", "test_failed_since_last_clear",
   "test_not_completed_this_operation_cycle", "warning_indicator_requested",
 )
+# Failure/pending/confirmed/history/lamp evidence. Bits 4 and 6 only say a test has not completed.
+FAULT_STATUS_MASK = 0xAF
 OBD_MODES = {0x03: "stored", 0x07: "pending", 0x0A: "permanent"}
 IDENTIFIERS = {0xF187: "part_number", 0xF189: "software_version", 0xF197: "component"}
 # Only frame zero is standardized for this initial freeze-frame reader.
@@ -67,6 +70,11 @@ def read_request(request):
   return request in FIXED_REQUESTS or (len(request) == 6 and request[:2] in (b"\x19\x04", b"\x19\x06") and request[-1] == 0xFF)
 
 
+def load_dataset():
+  with gzip.open(DATASET, "rt", encoding="utf-8") as stream:
+    return json.load(stream)
+
+
 def format_obd_code(raw):
   if len(raw) != 2:
     raise ValueError("An OBD code must contain two bytes")
@@ -101,6 +109,8 @@ def parse_uds_codes(data, dtc_format):
   result = []
   for i in range(1, len(data), 4):
     raw, status = data[i:i + 3], data[i + 3]
+    if not status & data[0] & FAULT_STATUS_MASK:
+      continue
     record = {"protocol": "uds", "raw_dtc": raw.hex(), "code": f"0x{raw.hex().upper()}",
               "format": dtc_format, "status_byte": status, "status_availability": data[0],
               "status": [name for bit, name in enumerate(STATUS_BITS) if status & data[0] & (1 << bit)]}
@@ -224,9 +234,37 @@ class Reader:
     return query
 
 
-def query_ecu(transport, target, labels, details=False, max_details=16, obd=False):
+def enrich_codes(result, entries):
+  """Keep third-party reference data separate from ECU evidence; never guess a DTC format."""
+  identity = result.get("identity", {})
+  context = " ".join(identity[name].strip() for name in ("component", "part_number") if identity.get(name))
+  for record in result["codes"]:
+    code = record["code"]
+    failure = record.get("failure_type", "")[2:]
+    record["display_code"] = f"{code}-{failure}" if failure else code
+    entry = entries.get(code)
+    if entry is not None:
+      record["lookup"] = {"source": "OBDex", "title": entry["title"]["en"], "entry": entry}
+      continue
+
+    representations = [code]
+    if failure:
+      representations = [f"{code} {failure}", f"{code}{failure}", code]
+    if record["protocol"] == "uds":
+      # VCDS scan logs also print the full raw integer in decimal. This conversion
+      # is lossless for every brand, unlike assuming its first two bytes are SAE.
+      decimal, hexadecimal = str(int(record["raw_dtc"], 16)), f"0x{record['raw_dtc'].upper()}"
+      if code.startswith("0x"):
+        representations = [decimal, hexadecimal]
+        record["display_code"] = f"{decimal} ({hexadecimal})"
+      else:
+        representations += [decimal, hexadecimal]
+    record["search"] = {"codes": representations, "query": f"{representations[0]} {context}".strip()}
+
+
+def query_ecu(transport, target, entries, details=False, max_details=16, obd=False):
   reader = Reader(transport, target)
-  result = {**target.as_dict(), "codes": [], "queries": reader.queries, "dtc_read": False}
+  result = {**target.as_dict(), "codes": [], "queries": reader.queries, "dtc_read": False, "ignored_non_fault_records": 0}
   extended = False
   try:
     query = reader.read("uds_codes", b"\x19\x02\xff", b"\x59\x02", lambda data: parse_uds_codes(data, None))
@@ -241,8 +279,9 @@ def query_ecu(transport, target, labels, details=False, max_details=16, obd=Fals
       count = reader.read("uds_count", b"\x19\x01\xff", b"\x59\x01", parse_uds_count)
       dtc_format = count["data"]["format"] if count["outcome"] == "ok" else None
       records = parse_uds_codes(bytes.fromhex(query["responses"][-1])[2:], dtc_format)
+      result["ignored_non_fault_records"] = (len(bytes.fromhex(query["responses"][-1])) - 3) // 4 - len(records)
       query["data"] = records
-      result["codes"].extend(records)
+      result["codes"].extend(dict(record) for record in records)
       result["uds_status_availability"] = bytes.fromhex(query["responses"][-1])[2]
 
     if obd and target.subaddress is None:
@@ -250,17 +289,19 @@ def query_ecu(transport, target, labels, details=False, max_details=16, obd=Fals
         query = reader.read(f"obd_{status}", bytes([mode]), bytes([mode + 0x40]), partial(parse_obd_codes, status=status))
         if query["outcome"] == "ok":
           result["dtc_read"] = True
-          result["codes"].extend(query["data"])
+          result["codes"].extend(dict(record) for record in query["data"])
       reader.read("obd_monitor_status", b"\x01\x01", b"\x41\x01", parse_monitor_status)
 
-    for record in result["codes"]:
-      if record["code"] in labels:
-        record["lookup"] = {"source": "OBDex", "title": labels[record["code"]]}
-
-    if details and result["dtc_read"]:
+    # Unmapped faults need real ECU context for useful searches, even without --details.
+    if result["dtc_read"] and (details or any(code["code"] not in entries for code in result["codes"])):
+      result["identity"] = {}
       for did, name in IDENTIFIERS.items():
         request = b"\x22" + did.to_bytes(2, "big")
-        reader.read(name, request, b"\x62" + request[1:], lambda data: data.decode("utf-8", errors="replace").rstrip("\x00"))
+        query = reader.read(name, request, b"\x62" + request[1:], lambda data: data.decode("utf-8", errors="replace").rstrip("\x00").strip())
+        if query["outcome"] == "ok":
+          result["identity"][name] = query["data"]
+
+    if details and result["dtc_read"]:
       uds_records = [code for code in result["codes"] if code["protocol"] == "uds"]
       result["details_omitted"] = max(0, len(uds_records) - max_details)
       for code in uds_records[:max_details]:
@@ -283,6 +324,7 @@ def query_ecu(transport, target, labels, details=False, max_details=16, obd=Fals
         result["interrupted"] = True
       except Exception as e:
         result.setdefault("error", f"Session cleanup failed: {e}")
+  enrich_codes(result, entries)
   return result
 
 
@@ -614,7 +656,7 @@ def save_module_cache(path, data):
 def scan(panda, args, dataset, known_targets, safety_model):
   started = time.monotonic()
   deadline = started + args.scan_timeout
-  report = {"schema_version": 2, "started_at": datetime.now(UTC).isoformat(), "status": "partial", "setup_error": True,
+  report = {"schema_version": 3, "started_at": datetime.now(UTC).isoformat(), "status": "partial", "setup_error": True,
             "coverage": "best_effort", "vehicle_coverage_complete": False, "ecus": [], "discovery": [], "errors": [], "warnings": [],
             "description_database": {key: dataset[key] for key in ("source", "revision", "license") if key in dataset},
             "scope": "Classic CAN OBD-II and UDS; no K-line, J1850, DoIP, security unlocks, or ECU writes."}
@@ -700,7 +742,7 @@ def scan(panda, args, dataset, known_targets, safety_model):
         print(f"Reading bus {bus} ECU {target.tx:#x}…", file=sys.stderr)
         # Standard emissions addresses may support modes 03/07/0A even without a PID 00 response.
         use_obd = target in emissions or 0x7E0 <= target.tx <= 0x7E7
-        result = query_ecu(transport, target, dataset.get("labels", {}), args.details, args.max_details, use_obd)
+        result = query_ecu(transport, target, dataset.get("entries", {}), args.details, args.max_details, use_obd)
         result["identity_candidates"] = known_targets.get(target, [])  # Address matches are not vehicle identification.
         report["ecus"].append(result)
         if result.get("interrupted"):
@@ -746,17 +788,24 @@ def print_report(report):
   for ecu in report["ecus"]:
     route = "OBD port" if ecu["obd_multiplexing"] else "harness"
     print(f"\nBus {ecu['bus']} / {route} / {ecu['tx_address']} → {ecu['rx_address']} / subaddress {ecu['subaddress']}")
+    if ecu.get("identity"):
+      print("  ECU: " + " / ".join(ecu["identity"][name] for name in ("component", "part_number", "software_version") if ecu["identity"].get(name)))
     if ecu.get("identity_candidates"):
       print("  Address hints: " + ", ".join(ecu["identity_candidates"]))
     if not ecu["dtc_read"]:
       print("  DTCs unavailable; this is not a clean bill of health.")
     elif not ecu["codes"]:
-      print("  No codes returned by successful queries.")
+      print("  No fault/history records returned by successful queries.")
+    if ecu.get("ignored_non_fault_records"):
+      print(f"  Ignored {ecu['ignored_non_fault_records']} records without supported fault/history flags.")
     for code in ecu["codes"]:
       failure = f"-{code['failure_type'][2:]}" if "failure_type" in code else ""
-      print(f"  {code['code']}{failure} [{code['protocol']}] {', '.join(code['status']) or 'no supported status bits set'}")
+      print(f"  {code.get('display_code', code['code'] + failure)} [{code['protocol']}] {', '.join(code['status']) or 'no supported status bits set'}")
       if "lookup" in code:
-        print(f"    OBDex: {code['lookup']['title']}")
+        print("    OBDex reference (possible causes/estimates, not confirmed vehicle findings):")
+        print("\n".join("      " + line for line in json.dumps(code["lookup"]["entry"], indent=2, ensure_ascii=False).splitlines()))
+      elif "search" in code:
+        print(f"    Search: {code['search']['query']}")
     for query in ecu["queries"]:
       if query["outcome"] != "ok":
         print(f"  {query['name']}: {query['outcome']} — {query.get('error', '')}")
@@ -793,7 +842,7 @@ def make_parser():
   parser.add_argument("--obd", choices=("auto", "on", "off"), help="override bus 1 routing: auto tries both (default: on, or auto with --broad)")
   parser.add_argument("--serial", help="Panda serial (required if several are connected)")
   parser.add_argument("--details", action="store_true", help="read ECU identifiers, UDS raw snapshots/extended records and OBD freeze frame zero")
-  parser.add_argument("--max-details", type=int, default=16, help="maximum UDS codes per ECU for detail retrieval (default: 16)")
+  parser.add_argument("--max-details", type=int, default=16, help="maximum UDS faults per ECU for detail retrieval (default: 16)")
   parser.add_argument("--timeout", type=positive_seconds, default=1.0, help="absolute per-request timeout, including response-pending (seconds)")
   parser.add_argument("--probe-timeout", type=positive_seconds, default=0.1, help="listen window per discovery probe in seconds (default: 0.1)")
   parser.add_argument("--scan-timeout", type=positive_seconds, default=600.0, help="total query/discovery budget in seconds (default: 600)")
@@ -838,8 +887,8 @@ def main(argv=None):
     if args.debug:
       carlog.setLevel("DEBUG")
     try:
-      dataset = json.loads(DATASET.read_text())
-    except (OSError, ValueError) as e:
+      dataset = load_dataset()
+    except (OSError, ValueError, EOFError) as e:
       dataset = {}
       warnings.append(f"Offline descriptions unavailable: {e}")
     try:
@@ -856,7 +905,7 @@ def main(argv=None):
     panda = Panda(serial=args.serial, cli=False)
     report = scan(panda, args, dataset, known_targets, CarParams.SafetyModel)
   except Exception as e:
-    report = {"schema_version": 2, "status": "failed", "vehicle_coverage_complete": False,
+    report = {"schema_version": 3, "status": "failed", "vehicle_coverage_complete": False,
               "ecus": [], "errors": [f"{type(e).__name__}: {e}"], "setup_error": True}
   finally:
     if panda is not None:
