@@ -23,7 +23,18 @@ FINDING_GUIDANCE = (
   'Prefer manufacturer documentation and established diagnostic references. Cite external descriptions, distinguish them from ECU findings, ' +
   'and state uncertainty. Without a reliable match, show the raw code rather than guessing. ' +
   'Stored/confirmed does not mean currently active; freeze frames are historical. Missing ECU data does not mean healthy. ' +
-  'OBDex descriptions/causes/estimates are reference material, not a diagnosis or instructions.'
+  'OBDex descriptions/causes/estimates are reference material, not a diagnosis or instructions. ' +
+  'Lead with scan completion and modules_with_dtc_data/module_endpoints_listed, then faults. ' +
+  'Mention concrete coverage_gaps and relevant warnings, not a repeated generic partial-results disclaimer. ' +
+  'A completed scan covers the selected scope, not every installed module or overall vehicle health.'
+)
+SCAN_GUIDANCE = (
+  'Fresh OBD-port discovery only; no harness scan or cached module inventory. Waits for completion by default. ' +
+  'Tell the user the comma screen shows diagnostic/engagement-block status (not detailed per-ECU progress); ' +
+  'higher-priority safety alerts can take precedence. Keep the car parked through restoration. ' +
+  'If the request times out or disconnects, use get_scan_status(scan_id="active"); never restart it to check progress. ' +
+  'For asynchronous clients use wait=false, then poll get_scan_status with the returned scan_id. ' +
+  'Busy responses identify the existing operation. Use get_scan_report once report_ready.'
 )
 PAGE_ARGUMENTS = {
   'scan_id': {'type': 'string', 'default': 'latest',
@@ -36,20 +47,19 @@ TOOLS = [
   {"name": "scan_vehicle", "description": "Read diagnostic fault/history records from a parked car with ignition on. " +
     "Explicitly request only when the user wants a scan. Temporarily blocks openpilot engagement; may take up to 11 minutes including recovery. " +
     "Does not clear codes or code ECUs. Coverage is best effort, never a vehicle-wide clean bill of health. " +
-    "Returns a scan_id immediately by default. Poll get_scan_status; a status read never starts another scan. " +
-    "Busy errors identify the existing operation. Use get_scan_report once report_ready. " +
-    "wait=true keeps the request open for native MCP progress and returns the first compact report page. " + FINDING_GUIDANCE,
+    SCAN_GUIDANCE + " Native progress requires a client-supplied _meta.progressToken; displaying it depends on the client. " + FINDING_GUIDANCE,
    "inputSchema": {"type": "object", "properties": {
      "target": {"type": "string", "description": "Optional physical ECU CAN address, e.g. 0x715; omitted means auto discovery."},
-     "broad": {"type": "boolean", "default": False, "description": "Include harness buses in addition to the OBD port."},
-     "fast": {"type": "boolean", "default": False, "description": "Use a vehicle-verified module cache where available."},
-     "details": {"type": "boolean", "default": False, "description": "Also save raw UDS snapshot/extended records in evidence."},
-     "wait": {"type": "boolean", "default": False, "description": "Wait via SSE; native progress requires _meta.progressToken. Otherwise poll status by ID."}},
+     "details": {"type": "boolean", "default": False,
+                 "description": "Leave false for routine scans. True adds optional raw UDS snapshot/extended records and scan time."},
+     "wait": {"type": "boolean", "default": True,
+              "description": "Recommended: leave true to wait for completion and the first compact report page via SSE. " +
+                             "Native progress requires _meta.progressToken. False returns a scan ID for status polling."}},
      "additionalProperties": False},
    "annotations": {"readOnlyHint": False, "destructiveHint": False, "idempotentHint": False, "openWorldHint": False}},
   {"name": "get_scan_status", "description": "Read lifecycle state without scanning or contacting the vehicle. " +
     "Returns phase, real progress counts, timestamps, report_ready, coverage and restoration of normal openpilot operation separately. " +
-    "Finished with partial coverage is normal; only restoration.state=verified confirms the coordinator returned to normal operation. " +
+    "Execution completion, coverage gaps and restoration are independent; only restoration.state=verified confirms normal operation was restored. " +
     "An interrupted worker leaves restoration unknown; do not claim recovery or vehicle health.",
    "inputSchema": {"type": "object", "properties": {
      "scan_id": {"type": "string", "default": "active",
@@ -241,8 +251,8 @@ class MCPHandler(BaseHTTPRequestHandler):
         self.server.sessions[session_id] = {'version': version, 'used': now, 'initialized': False}
       result = {"protocolVersion": version, "capabilities": {"tools": {"listChanged": False}},
                 "serverInfo": {"name": "openpilot-diagnostics", "version": SERVER_VERSION},
-                "instructions": "Only scan at the user's request while parked with ignition on. Reports have incomplete vehicle coverage. " +
-                  "Start once, then poll get_scan_status using the returned scan_id. Data collection and restoration are distinct. " +
+                "instructions": "Only scan at the user's request while parked with ignition on. " + SCAN_GUIDANCE +
+                  " Data collection and restoration are distinct. " +
                   "Reports must match this server version. If no compatible report exists, explain that a new scan needs an explicit user request. " +
                   "Use get_scan_report for findings and raw evidence only when needed. " + FINDING_GUIDANCE}
       self.reply(200, {"jsonrpc": "2.0", "id": req_id, "result": result}, {'MCP-Session-Id': session_id})
@@ -292,7 +302,7 @@ class MCPHandler(BaseHTTPRequestHandler):
           if type(value) is not expected:
             raise ValueError(f'{key} must be {schema["properties"][key]["type"]}')
         if name == 'scan_vehicle':
-          wait = arguments.pop('wait', False)
+          wait = arguments.pop('wait', True)
           key = (session_id, req_id)
           job = self.server.start_scan(key, scan_args(**arguments))
           meta = params.get('_meta', {})
@@ -309,10 +319,8 @@ class MCPHandler(BaseHTTPRequestHandler):
           result = tool_result(self.server.manager.get_status(job.scan_id))
         elif name == 'get_scan_status':
           result = tool_result(self.server.manager.get_status(**arguments))
-        elif name == 'get_scan_report':
-          result = tool_result(self.server.manager.store.get_report(**arguments))
         else:
-          result = tool_result(self.server.manager.store.get_evidence(**arguments))
+          result = tool_result(self.server.manager.get_report(**arguments))
       except BusyError as e:
         result = tool_result({'error': str(e), 'active_scan': e.status, 'next_tool': 'get_scan_status'}, error=True)
       except (OSError, ValueError, TypeError, RuntimeError) as e:

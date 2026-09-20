@@ -221,6 +221,19 @@ def get_display_speed(speed_ms: float, metric: bool) -> str:
 AlertCallbackType = Callable[[car.CarParams, car.CarState, messaging.SubMaster, bool, int, log.ControlsState], Alert]
 
 
+def diagnostics_running_alert(CP: car.CarParams, CS: car.CarState, sm: messaging.SubMaster,
+                              metric: bool, soft_disable_time: int, personality) -> Alert:
+  phase = str(sm['diagnosticState'].phase)
+  title = {'preparing': 'Diagnostics: Preparing', 'restoring': 'Diagnostics: Restoring'}.get(phase, 'Vehicle Diagnostics')
+  faults = [name for present, name in ((CS.steerFaultPermanent, 'LKAS'), (CS.accFaulted, 'Cruise')) if present]
+  text = 'Engagement blocked'
+  if faults:
+    text += ' - ' + ' + '.join(faults) + (' fault reported' if len(faults) == 1 else ' faults reported')
+  # Outrank routine permanent faults, retaining their context in this banner.
+  # No-entry, immediate-disable and higher-priority safety alerts remain intact.
+  return NormalPermanentAlert(title, text, priority=Priority.LOW)
+
+
 def soft_disable_alert(alert_text_2: str) -> AlertCallbackType:
   def func(CP: car.CarParams, CS: car.CarState, sm: messaging.SubMaster, metric: bool, soft_disable_time: int, personality) -> Alert:
     if soft_disable_time < int(0.5 / DT_CTRL):
@@ -924,7 +937,7 @@ EVENTS: dict[int, dict[str, Alert | AlertCallbackType]] = {
   EventName.diagnosticsRunning: {
     ET.IMMEDIATE_DISABLE: ImmediateDisableAlert("Vehicle Diagnostics"),
     ET.NO_ENTRY: NoEntryAlert("Vehicle Diagnostics Running"),
-    ET.PERMANENT: NormalPermanentAlert("Vehicle Diagnostics", "Engagement blocked until recovery completes"),
+    ET.PERMANENT: diagnostics_running_alert,
   },
 
   # This alert can be thrown for the following reasons:

@@ -190,7 +190,8 @@ class ReportStore:
       report = self.get(scan_id)['report']
       return {'scan_id': scan_id, 'execution': report.get('execution', 'unknown'), 'phase': 'saved_report',
               'started_at': report.get('started_at'), 'updated_at': report.get('completed_at'), 'completed_at': report.get('completed_at'),
-              'report_ready': True, 'coverage': coverage_status(report), 'vehicle_coverage_complete': False,
+              'report_ready': True, 'coverage': coverage_status(report), 'coverage_gaps': report.get('coverage_gaps', {}),
+              'vehicle_coverage_complete': False,
               'restoration': report.get('restoration', {'state': 'unknown'}), 'active_scan_id': None,
               'message': 'Saved report; older scans may not contain lifecycle or restoration evidence'}
     if state is None:
@@ -299,6 +300,26 @@ class DiagnosticManager:
     state['seconds_since_update'] = round(max(0, (datetime.now(UTC) - datetime.fromisoformat(state['updated_at'])).total_seconds()), 1)
     return state
 
+  def get_report(self, scan_id='latest', ecu=None, cursor=None, limit=20, raw=False):
+    try:
+      return self.store.get_evidence(scan_id, ecu, cursor, limit, raw)
+    except FileNotFoundError:
+      # A known scan need not have published a report yet. Do not expose its
+      # filesystem path, start another scan, or substitute an older report.
+      selected_id = decode_cursor(cursor)['scan_id'] if cursor is not None else scan_id
+      try:
+        state = self.get_status(selected_id)
+      except FileNotFoundError:
+        raise ValueError('Unknown scan ID or report no longer retained; use get_scan_status to inspect the current operation') from None
+      if state.get('report_ready'):
+        # Publication may have completed between the first read and the status
+        # lookup. Retry before deciding that retention removed the report.
+        try:
+          return self.store.get_evidence(scan_id, ecu, cursor, limit, raw)
+        except FileNotFoundError:
+          raise ValueError('Saved report is no longer available for this scan') from None
+      return {**state, 'report_ready': False, 'next_tool': 'get_scan_status' if state['execution'] == 'running' else None}
+
   def _run(self, operation, args):
     try:
       self._scan(operation, args)
@@ -341,7 +362,8 @@ class DiagnosticManager:
       # Close the transport even if persisting a progress update fails.
       try:
         self._update(operation, 'restoring', 'Data collection finished; restoring normal openpilot operation',
-                     collection_finished_at=timestamp(), restoration={'state': 'in_progress'}, coverage=coverage_status(evidence))
+                     collection_finished_at=timestamp(), restoration={'state': 'in_progress'}, coverage=coverage_status(evidence),
+                     coverage_gaps=evidence.get('coverage_gaps', {}))
       finally:
         if transport is not None:
           try:
@@ -366,4 +388,4 @@ class DiagnosticManager:
               f'{outcome}; normal openpilot operation not verified' if restoration['state'] == 'unverified' else f'{outcome}; no restoration needed'
     self._update(operation, 'complete' if execution == 'finished' else execution, message,
                  execution=execution, completed_at=evidence['completed_at'], report_ready=True,
-                 coverage=coverage_status(evidence), restoration=restoration)
+                 coverage=coverage_status(evidence), coverage_gaps=evidence.get('coverage_gaps', {}), restoration=restoration)

@@ -135,7 +135,7 @@ class TestMCP(unittest.TestCase):
 
   def test_async_scan_status_and_evidence_without_rescan(self):
     self.initialize()
-    status, headers, data = self.request(self.rpc('tools/call', {'name': 'scan_vehicle', 'arguments': {'target': '0x715'}}))
+    status, headers, data = self.request(self.rpc('tools/call', {'name': 'scan_vehicle', 'arguments': {'target': '0x715', 'wait': False}}))
     self.assertEqual(status, 200)
     self.assertEqual(headers['Content-Type'], 'application/json')
     scan_id = json.loads(data)['result']['structuredContent']['scan_id']
@@ -147,8 +147,59 @@ class TestMCP(unittest.TestCase):
     _, _, body = self.request(self.rpc('tools/call', {'name': 'get_scan_evidence', 'arguments': {'scan_id': scan_id}}, 3))
     self.assertEqual(json.loads(body)['result']['structuredContent']['scan_id'], scan_id)
     self.assertEqual(self.manager.calls, 1)
-    self.request(self.rpc('tools/call', {'name': 'scan_vehicle'}, 2))
+    self.request(self.rpc('tools/call', {'name': 'scan_vehicle', 'arguments': {'wait': False}}, 2))
     self.assertEqual(self.manager.calls, 1)  # same session/request ID is replayed
+
+  def test_default_scan_waits_without_a_progress_token(self):
+    self.initialize()
+    _, headers, data = self.request(self.rpc('tools/call', {'name': 'scan_vehicle', 'arguments': {'target': '0x715'}}))
+    self.assertEqual(headers['Content-Type'], 'text/event-stream')
+    messages = [json.loads(line[6:]) for line in data.splitlines() if line.startswith('data: ')]
+    self.assertEqual(len(messages), 1)
+    self.assertEqual(messages[0]['result']['structuredContent']['execution'], 'finished')
+    self.assertEqual(messages[0]['result']['structuredContent']['restoration']['state'], 'verified')
+    args = self.server.jobs[(self.sid, 2)].result
+    self.assertEqual([(r['bus'], r['obd_multiplexing']) for r in args['routes']], [(1, True)])
+    self.assertFalse(args['cache']['fast_requested'])
+
+  def test_scan_schema_is_fresh_obd_only_and_rejects_stale_mode_arguments(self):
+    self.initialize()
+    _, _, data = self.request(self.rpc('tools/list'))
+    properties = json.loads(data)['result']['tools'][0]['inputSchema']['properties']
+    self.assertEqual(set(properties), {'target', 'details', 'wait'})
+    self.assertTrue(properties['wait']['default'])
+    for args in ({'broad': True}, {'fast': True}, {'broad': True, 'fast': True, 'details': True}):
+      _, _, data = self.request(self.rpc('tools/call', {'name': 'scan_vehicle', 'arguments': args}))
+      self.assertIn('error', json.loads(data))
+    self.assertEqual(self.manager.calls, 0)
+
+  def test_report_reads_while_running_return_status_without_filesystem_errors(self):
+    self.initialize()
+    self.manager.block = True
+    _, _, data = self.request(self.rpc('tools/call', {'name': 'scan_vehicle', 'arguments': {'target': '0x715', 'wait': False}}))
+    scan_id = json.loads(data)['result']['structuredContent']['scan_id']
+    self.assertTrue(self.manager.started.wait(1))
+    for name, extra in (('get_scan_report', {}), ('get_scan_evidence', {}), ('get_scan_evidence', {'raw': True})):
+      _, _, data = self.request(self.rpc('tools/call', {'name': name, 'arguments': {'scan_id': scan_id, **extra}}, 3))
+      result = json.loads(data)['result']
+      self.assertFalse(result['isError'], result)
+      state = result['structuredContent']
+      self.assertEqual(state['scan_id'], scan_id)
+      self.assertEqual(state['execution'], 'running')
+      self.assertFalse(state['report_ready'])
+      self.assertEqual(state['next_tool'], 'get_scan_status')
+      self.assertNotIn(self.tmp.name, data)
+    self.assertEqual(self.manager.calls, 1)
+
+  def test_missing_report_has_a_friendly_error(self):
+    self.initialize()
+    for name in ('get_scan_report', 'get_scan_evidence'):
+      _, _, data = self.request(self.rpc('tools/call', {'name': name, 'arguments': {'scan_id': 'f' * 32}}))
+      result = json.loads(data)['result']
+      self.assertTrue(result['isError'])
+      self.assertNotIn(self.tmp.name, data)
+      self.assertIn('Unknown scan', result['structuredContent']['error'])
+    self.assertEqual(self.manager.calls, 0)
 
   def test_cancel_and_busy(self):
     self.initialize()
@@ -195,7 +246,7 @@ class TestMCP(unittest.TestCase):
     self.initialize()
     for bad in ([], {'jsonrpc': '2.0', 'id': [], 'method': 'ping'}, {'jsonrpc': '2.0', 'id': True, 'method': 'ping'}):
       self.assertEqual(self.request(bad)[0], 400)
-    for args in ({'broad': 'yes'}, {'target': '0x7df'}, {'details': 1}):
+    for args in ({'wait': 'yes'}, {'target': '0x7df'}, {'details': 1}):
       _, _, data = self.request(self.rpc('tools/call', {'name': 'scan_vehicle', 'arguments': args}))
       self.assertTrue(json.loads(data)['result']['isError'])
     self.assertEqual(self.manager.calls, 0)

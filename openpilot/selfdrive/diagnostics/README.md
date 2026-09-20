@@ -6,8 +6,9 @@ No model runtime or new Python dependency is required.
 
 ## Tools
 
-- `scan_vehicle(target?, broad=false, fast=false, details=false, wait=false)` starts
-  a scan and immediately returns its `scan_id` and lifecycle state. An agent request
+- `scan_vehicle(target?, details=false, wait=true)` starts
+  a fresh OBD-only scan and waits for completion, returning the first compact report
+  page. `wait=false` instead returns its `scan_id` and lifecycle state immediately. An agent request
   is the approval; there is no on-device confirmation tap. Target is a physical CAN
   address such as `0x715`. A busy result includes `active_scan` and its ID; inspect
   that operation instead of retrying the scan.
@@ -22,6 +23,11 @@ No model runtime or new Python dependency is required.
   the same compact default. Set `raw=true` for raw replies, discovery evidence and
   **full, unchanged OBDex entries**. This does not run additional vehicle queries;
   collecting optional snapshot/extended records requires `details=true` when scanning.
+  Leave `details=false` for routine scans; these extra queries add time.
+
+Reading a known scan's report before publication returns its lifecycle state,
+`report_ready=false` and `next_tool=get_scan_status`, not a filesystem error.
+Unknown/pruned IDs produce a readable error. Neither case starts another scan.
 
 Both report tools are bounded to **8,000 serialized JSON bytes per page** and
 1–50 records (`limit`). MCP's text and structured result representations duplicate
@@ -51,9 +57,10 @@ delete, rewrite, or migrate old files; ordinary storage retention still applies.
 the producer version and negotiated MCP protocol version. Bump `SERVER_VERSION`
 for server releases to invalidate reports from previous implementations.
 
-OBD-only discovery is the default. `broad` adds harness routes. The existing
-vehicle-verified cache behavior is unchanged. Fault/history interpretation, full
-OBDex entries, searchable unknown codes, and incomplete coverage are preserved.
+MCP always performs fresh OBD-only discovery. `broad` and `fast` are no longer MCP
+arguments; stale calls containing them are rejected before any vehicle access.
+The CLI retains `--broad` and `--fast` for advanced use. Fault/history interpretation,
+full OBDex entries, searchable unknown codes, and coverage limits are preserved.
 There are no code-clearing, ECU-coding, security-unlock, shell, or arbitrary-CAN
 tools. Session-control requests used by the reader remain narrowly allowlisted.
 
@@ -79,6 +86,10 @@ not evidence of health.
 2. `pandad` announces preparation. `selfdrived` adds an actual no-entry/immediate-
    disable event and a visible diagnostic alert. `card` pauses normal control TX.
    Both must acknowledge the current session and route before ELM327 is selected.
+   Tell users the comma screen shows diagnostic/engagement-block status, not detailed
+   per-ECU progress. The banner outranks routine permanent LKAS/cruise fault banners
+   but retains those faults in its text. Higher-priority safety alerts still win;
+   no safety events are suppressed. Preparation/restoration have distinct labels.
 3. `pandad` remains the sole hardware reader/configuration owner. The scanner
    subscribes to copies of `can` and publishes a separate, session-tagged
    diagnostic TX stream. It never clears Panda's shared receive queue. Native TX
@@ -100,9 +111,19 @@ remains locked out. Do not manually remove `DiagnosticRecoveryRequired` to bypas
 an unresolved recovery. Check connections and restart openpilot/the device.
 An idle MCP frontend failure alone is not a driving-process fault.
 
-Execution and coverage are separate: `execution=finished` with `coverage=partial`
-is normal. Coverage can also be `unknown` before collection or `unavailable` when
-no DTC data was obtained. `collection_finished_at` does **not** mean restoration
+Execution and coverage are separate. A completed collection is `status=complete`
+when discovered modules returned DTC data and no concrete collection gaps remain;
+its MCP `coverage=best_effort` and `vehicle_coverage_complete=false` still make no
+claim about undiscovered modules. `partial` is reserved for actual gaps: unread
+modules, unfinished routes/discovery, ambiguous or unconfirmed reply pairs,
+deadline expiry or collection errors. Unsupported optional queries alone do not
+make an otherwise successful scan partial. Compact pages carry `coverage_gaps`
+counts and summary warning/error counts; warning/error records precede findings.
+Agents should lead with completion, read-module counts and faults, mention concrete
+gaps, and avoid repeating a generic partial-results disclaimer.
+
+Coverage can also be `unknown` before collection or `unavailable` when no DTC data
+was obtained. `collection_finished_at` does **not** mean restoration
 has completed. During cleanup, phase is `restoring`, execution remains `running`,
 and restoration state is `in_progress`. A fresh native coordinator idle response
 allows `restoration.state=verified` (normal openpilot operation restored).
@@ -130,7 +151,7 @@ Live progress is persisted at phase transitions and at most once a second within
 a phase; the server keeps the current in-memory state. `seconds_since_update`
 exposes the age of the last update, not an estimated percentage or time remaining.
 
-Default scan calls return JSON immediately. With `wait=true`, POST SSE keeps the
+Default scan calls use `wait=true`: POST SSE keeps the
 request open and returns the first compact report page at completion. If the caller
 supplies `_meta.progressToken`, native `notifications/progress` carry increasing
 sequence values and real phase messages: discovery addresses checked, ECUs being
@@ -141,7 +162,10 @@ An immediate-return request cannot continue emitting native progress after its
 response; poll `get_scan_status` instead. Experimental MCP Tasks are not required
 or advertised. ChatGPT's display/model exposure of notifications is not verified.
 
-A dropped HTTP connection does not cancel a scan: inspect its ID afterward.
+A dropped HTTP connection does not cancel a scan: inspect its ID afterward, or
+use `get_scan_status("active")` if the client has not received the ID yet. Never
+retry `scan_vehicle` merely to check progress. Clients with short tool-call timeouts
+can explicitly choose `wait=false` and poll status instead of holding a connection.
 Explicit MCP cancellation applies only while the `wait=true` request is pending;
 session deletion or server shutdown also asks owned scans to stop and restore.
 A late cancellation for an already-returned async request is ignored. A repeated
@@ -193,6 +217,7 @@ evidence can contain vehicle identifiers; protect the device and tunnel.
 
 ```sh
 python tools/test_runner.py -j1 tools/scripts/car/tests/test_diagnose.py tools/scripts/car/tests/test_update_obdex.py openpilot/selfdrive/diagnostics/tests
+python tools/test_runner.py -j1 openpilot/selfdrive/selfdrived/tests/test_diagnostic_alerts.py
 scons openpilot/selfdrive/pandad/tests/test_diagnostic_session
 openpilot/selfdrive/pandad/tests/test_diagnostic_session
 ```

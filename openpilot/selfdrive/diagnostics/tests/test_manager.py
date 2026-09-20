@@ -93,6 +93,13 @@ class TestManager(unittest.TestCase):
     self.assertEqual(self.closed, [True])
     self.assertEqual(self.manager.store.get()['report'], report)
 
+  def test_report_publication_racing_with_a_read_retries_after_ready(self):
+    report = self.run_scan()
+    page = self.manager.store.get_report(report['scan_id'])
+    with patch.object(self.manager.store, 'get_evidence', side_effect=[FileNotFoundError(), page]) as read:
+      self.assertEqual(self.manager.get_report(report['scan_id']), page)
+    self.assertEqual(read.call_count, 2)
+
   def test_exception_still_closes_and_saves_failure(self):
     report = self.run_scan(error=RuntimeError('wire failed'))
     self.assertEqual(self.closed, [True])

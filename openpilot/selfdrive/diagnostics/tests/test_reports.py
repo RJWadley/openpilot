@@ -79,6 +79,31 @@ class TestReports(unittest.TestCase):
     with self.assertRaises(ValueError):
       self.store.get_report('d' * 32, cursor=page['next_cursor'])
 
+  def test_gaps_and_counts_survive_pagination_and_warnings_precede_findings(self):
+    ecus = [{'tx_address': address, 'dtc_read': readable, 'queries': [], 'codes': []}
+            for address, readable in (('0x715', False), ('0x7e0', True))]
+    gaps = {'modules_without_dtc_data': 1, 'unprobed_addresses': 4}
+    self.store.save('a' * 32, evidence(ecus=ecus, warnings=['Four addresses were not probed'], coverage_gaps=gaps))
+    page = self.store.get_report(limit=1)
+    self.assertEqual(page['items'][0]['kind'], 'warning')
+    while True:
+      self.assertEqual(page['coverage'], 'partial')
+      self.assertEqual(page['coverage_gaps'], gaps)
+      self.assertEqual(page['summary']['modules_with_dtc_data'], 1)
+      self.assertEqual(page['summary']['module_endpoints_listed'], 2)
+      self.assertEqual(page['summary']['warning_count'], 1)
+      self.assertFalse(page['vehicle_coverage_complete'])
+      if not page['next_cursor']:
+        break
+      page = self.store.get_report(cursor=page['next_cursor'], limit=1)
+
+  def test_complete_collection_does_not_claim_complete_vehicle_coverage(self):
+    self.store.save('a' * 32, evidence(status='complete', execution='finished', coverage='best_effort', coverage_gaps={}))
+    page = self.store.get_report()
+    self.assertEqual(page['execution'], 'finished')
+    self.assertEqual(page['coverage'], 'best_effort')
+    self.assertFalse(page['vehicle_coverage_complete'])
+
   def legacy_report(self, scan_id, version=None):
     # Real disk fixtures represent data produced before the currently running server.
     bundle = {'report': {'scan_id': scan_id, 'legacy_marker': True}, 'evidence': {}}

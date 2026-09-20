@@ -7,7 +7,7 @@ PAGE_BYTES = 8000
 
 
 def coverage_status(report):
-  return 'unavailable' if report.get('status') == 'failed' else report.get('status', 'unknown')
+  return {'failed': 'unavailable', 'complete': 'best_effort'}.get(report.get('status'), report.get('status', 'unknown'))
 
 
 def decode_cursor(cursor):
@@ -111,11 +111,15 @@ def evidence_report(bundle):
 
 def compact_report(report):
   result = {key: report[key] for key in ('scan_id', 'server_version', 'started_at', 'completed_at', 'execution', 'restoration',
-                                        'coverage', 'vehicle_coverage_complete', 'scope', 'summary',
+                                        'coverage', 'coverage_gaps', 'vehicle_coverage_complete', 'scope', 'summary',
                                         'interpretation', 'reference_notice') if key in report}
   result.update(execution=report.get('execution', 'unknown'), restoration=report.get('restoration', {'state': 'unknown'}),
                 coverage=coverage_status(report), coverage_method=report.get('coverage', 'unknown'))
   result['items'] = []
+  # Put actionable limitations before findings so they are not buried on the
+  # last page. Counts and coverage gaps stay in every compact page's metadata.
+  for kind in ('errors', 'warnings'):
+    result['items'].extend({'kind': kind[:-1], 'message': message} for message in report.get(kind, []))
   for ecu in report['ecus']:
     identity = {key: ecu[key] for key in ('bus', 'obd_multiplexing', 'tx_address', 'rx_address', 'subaddress', 'identity') if key in ecu}
     result['items'].append({'kind': 'ecu', **{key: value for key, value in ecu.items() if key != 'codes'}})
@@ -125,6 +129,4 @@ def compact_report(report):
         fault['lookup'].pop('entry', None)
         fault['lookup']['details_available'] = True
       result['items'].append({'kind': 'fault', 'ecu': identity, 'fault': fault})
-  for kind in ('warnings', 'errors'):
-    result['items'].extend({'kind': kind[:-1], 'message': message} for message in report.get(kind, []))
   return result

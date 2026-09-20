@@ -385,6 +385,8 @@ class TestScanning(IsolatedCacheTest):
          contextlib.redirect_stderr(io.StringIO()):
       report = d.scan(panda, args, {}, {}, SAFETY)
     self.assertEqual(len(report["ecus"]), 20)
+    self.assertEqual(report["status"], "complete")
+    self.assertFalse(any(report['coverage_gaps'].values()))
     self.assertTrue(all(ecu["dtc_read"] for ecu in report["ecus"]))
     self.assertTrue(all(not ecu["identity_candidates"] for ecu in report["ecus"]))
     self.assertEqual(report["discovery"][0]["not_probed"], 0)
@@ -416,6 +418,7 @@ class TestScanning(IsolatedCacheTest):
     with patch.object(d, "generic_probes", return_value={(engine.tx, None), (airbag.tx, None)}), contextlib.redirect_stderr(io.StringIO()):
       report = d.scan(panda, args, {"entries": {"P0301": MISFIRE_ENTRY}}, {}, SAFETY)
     self.assertEqual(report["status"], "partial")
+    self.assertEqual(report['coverage_gaps']['modules_without_dtc_data'], 1)
     self.assertFalse(report["vehicle_coverage_complete"])
     results = {ecu["tx_address"]: ecu for ecu in report["ecus"]}
     self.assertFalse(results["0x715"]["dtc_read"])
@@ -558,7 +561,8 @@ class TestScanning(IsolatedCacheTest):
     args = d.make_parser().parse_args(["--addr", "0x710", "--rx-addr", "0x77a", "--obd", "off"])
     with patch.object(d, "discover", side_effect=AssertionError("discovery must be bypassed")), contextlib.redirect_stderr(io.StringIO()):
       report = d.scan(panda, args, {}, {}, SAFETY)
-    self.assertEqual(report["status"], "partial")
+    self.assertEqual(report["status"], "complete")
+    self.assertFalse(report['vehicle_coverage_complete'])
     self.assertEqual(report["discovery"], [])
 
   def test_no_response_is_failure_not_no_faults(self):
@@ -909,7 +913,7 @@ class TestRoutesAndCache(IsolatedCacheTest):
       with self.subTest(data=data):
         self.cache_path.write_text(data)
         report, _ = self.run_scan(["--fast"])
-        self.assertEqual(report["status"], "partial")
+        self.assertEqual(report["status"], "complete")
         self.assertTrue(report["cache"]["updated"])
         self.assertEqual(report["cache"]["routes_reused"], 0)
 
@@ -1019,7 +1023,7 @@ class TestRoutesAndCache(IsolatedCacheTest):
   def test_cache_write_failure_is_warning_not_scan_failure(self):
     with patch.object(d, "save_module_cache", side_effect=OSError("disk full")):
       report, _ = self.run_scan()
-    self.assertEqual(report["status"], "partial")
+    self.assertEqual(report["status"], "complete")
     self.assertFalse(report["errors"])
     self.assertTrue(any("disk full" in w for w in report["warnings"]))
 

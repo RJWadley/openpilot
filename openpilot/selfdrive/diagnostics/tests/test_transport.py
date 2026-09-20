@@ -170,7 +170,7 @@ class TestTransport(unittest.TestCase):
         request({'jsonrpc': '2.0', 'method': 'notifications/initialized'})
         with patch.object(diagnose, 'load_known_targets', return_value={}):
           data, _ = request({'jsonrpc': '2.0', 'id': 2, 'method': 'tools/call',
-                             'params': {'name': 'scan_vehicle', 'arguments': {'target': '0x7e0', 'wait': True},
+                             'params': {'name': 'scan_vehicle', 'arguments': {'target': '0x7e0'},
                                         '_meta': {'progressToken': 'scan-progress'}}})
         responses = [json.loads(line[6:]) for line in data.splitlines() if line.startswith('data: ')]
         result = responses[-1]['result']

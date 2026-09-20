@@ -680,6 +680,17 @@ def save_module_cache(path, data):
       temporary.unlink(missing_ok=True)
 
 
+def coverage_gaps(report):
+  """Observed collection gaps, not an assertion about undiscovered modules."""
+  discovery = report.get('discovery', [])
+  return {'modules_without_dtc_data': sum(not ecu['dtc_read'] for ecu in report['ecus']),
+          'unprobed_addresses': sum(route.get('not_probed', 0) for route in discovery),
+          'unconfirmed_reply_pairs': sum(len(route.get('unconfirmed', [])) for route in discovery),
+          'ambiguous_reply_pairs': sum(len(route.get('ambiguous', [])) for route in discovery),
+          'unfinished_routes': sum(route['outcome'] != 'finished' for route in report.get('routes', [])),
+          'deadline_reached': report.get('deadline_reached', False), 'collection_errors': len(report.get('errors', []))}
+
+
 def scan(panda, args, dataset, known_targets, safety_model, progress=None):
   started = time.monotonic()
   deadline = started + args.scan_timeout
@@ -770,7 +781,7 @@ def scan(panda, args, dataset, known_targets, safety_model, progress=None):
         if discovery["unconfirmed"] or discovery["ambiguous"]:
           report["warnings"].append(f"Bus {bus} ({'OBD port' if obd else 'harness'}): " +
                                     f"{len(discovery['unconfirmed'])} unconfirmed and {len(discovery['ambiguous'])} ambiguous reply pairs " +
-                                    "were not treated as identified ECUs. Use --evidence FILE to save their addresses and raw replies.")
+                                    "were not treated as identified ECUs. Their addresses and raw replies are in the discovery evidence.")
       total = len(found)
       update('reading', f'Reading {total} ECUs on bus {bus}', current=0, total=total, unit='ecus', bus=bus, obd_multiplexing=obd)
       for index, target in enumerate(sorted(found, key=target_key)):
@@ -824,8 +835,11 @@ def scan(panda, args, dataset, known_targets, safety_model, progress=None):
   if report["cache"]["routes_reused"]:
     report["warnings"].append("Fast scan checks cached modules only on reused routes; run without --fast to discover new or previously missed modules.")
   report["elapsed_seconds"] = round(time.monotonic() - started, 3)
+  report['coverage_gaps'] = coverage_gaps(report)
   if not any(ecu["dtc_read"] for ecu in report["ecus"]):
     report["status"] = "failed"
+  else:
+    report['status'] = 'partial' if any(report['coverage_gaps'].values()) else 'complete'
   update('collection_complete', 'Diagnostic data collection finished; restoration is a separate step')
   return report
 
@@ -837,7 +851,7 @@ def diagnosis_report(report):
   result = {key: report[key] for key in ("started_at", "status", "setup_error", "coverage", "vehicle_coverage_complete", "scope",
                                         "errors", "warnings", "elapsed_seconds", "deadline_reached", "description_database", "cache",
                                         "evidence_file", "replay", "scan_id", "recovery_required", "execution", "restoration",
-                                        "collection_finished_at", "completed_at") if key in report}
+                                        "collection_finished_at", "completed_at", "coverage_gaps") if key in report}
   result.update(schema_version=SCHEMA_VERSION, report_kind="diagnosis", ecus=[],
                 interpretation="Fault/history records are not a count of active problems. Missing data does not mean healthy.",
                 reference_notice="OBDex entries are third-party reference material, not vehicle findings. " +
@@ -879,13 +893,14 @@ def diagnosis_report(report):
   result["summary"] = {"module_endpoints_listed": len(result["ecus"]),
                        "modules_with_dtc_data": sum(ecu["dtc_read"] for ecu in result["ecus"]),
                        "modules_without_dtc_data": sum(not ecu["dtc_read"] for ecu in result["ecus"]),
-                       "fault_history_records": sum(len(ecu["codes"]) for ecu in result["ecus"])}
+                       "fault_history_records": sum(len(ecu["codes"]) for ecu in result["ecus"]),
+                       "warning_count": len(report.get('warnings', [])), "error_count": len(report.get('errors', []))}
   return result
 
 
 def print_report(report):
   report = diagnosis_report(report)
-  print(f"Diagnostic scan: {report['status']} (vehicle-wide coverage is not verified)")
+  print(f"Diagnostic scan: {report['status']}")
   print(report["interpretation"])
   print(report["reference_notice"])
   summary = report["summary"]

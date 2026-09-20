@@ -75,7 +75,7 @@ class TestLifecycle(unittest.TestCase):
     self.assertTrue(operation.done.wait(5))
     status = DiagnosticManager(ReportStore(self.tmp.name)).get_status(operation.scan_id)
     self.assertEqual(status['execution'], 'finished')
-    self.assertEqual(status['coverage'], 'partial')
+    self.assertEqual(status['coverage'], 'best_effort')
     self.assertEqual(status['restoration']['state'], 'verified')
     self.assertTrue(status['report_ready'])
     self.assertIsNotNone(status['completed_at'])
@@ -110,7 +110,7 @@ class TestLifecycle(unittest.TestCase):
     self.args.rx_addr = None
     updates = []
     result = diagnose.scan(panda, self.args, {}, {}, CarParams.SafetyModel, progress=updates.append)
-    self.assertEqual(result['status'], 'partial')
+    self.assertEqual(result['status'], 'complete')
     discovery = [p for p in updates if p['phase'] == 'discovering']
     self.assertEqual((discovery[0]['current'], discovery[0]['total']), (0, 1))
     self.assertEqual((discovery[-1]['current'], discovery[-1]['total']), (1, 1))
