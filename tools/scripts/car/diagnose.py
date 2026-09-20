@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Read OBD-II/UDS faults on a parked vehicle with openpilot stopped. See diagnose.md."""
+"""Read OBD-II/UDS faults on a parked vehicle through openpilot. See diagnose.md."""
 import argparse
 import gzip
 import hashlib
@@ -806,7 +806,7 @@ def diagnosis_report(report):
     return report
   result = {key: report[key] for key in ("started_at", "status", "setup_error", "coverage", "vehicle_coverage_complete", "scope",
                                         "errors", "warnings", "elapsed_seconds", "deadline_reached", "description_database", "cache",
-                                        "evidence_file", "replay") if key in report}
+                                        "evidence_file", "replay", "scan_id", "recovery_required") if key in report}
   result.update(schema_version=SCHEMA_VERSION, report_kind="diagnosis", ecus=[],
                 interpretation="Fault/history records are not a count of active problems. Missing data does not mean healthy.",
                 reference_notice="OBDex entries are third-party reference material, not vehicle findings. " +
@@ -910,7 +910,7 @@ def positive_seconds(value):
 
 def make_parser():
   parser = argparse.ArgumentParser(description=__doc__,
-                                   epilog="Exit 0: some DTC data read (coverage may be partial). Exit 1: no DTC data. Exit 2: setup error.")
+                                   epilog="Exit 0: some DTC data read (coverage may be partial). Exit 1: no DTC data. Exit 2: setup/recovery error.")
   parser.add_argument("--addr", type=lambda value: int(value, 0), help="target a physical ECU address instead of auto-scanning")
   parser.add_argument("--rx-addr", type=lambda value: int(value, 0), help="explicit reply address, e.g. VW tx + 0x6a")
   parser.add_argument("--subaddress", type=lambda value: int(value, 0), help="ISO-TP subaddress")
@@ -920,6 +920,7 @@ def make_parser():
                       help="override buses; repeat to select several (default: 1, or 1/0/2 with --broad)")
   parser.add_argument("--obd", choices=("auto", "on", "off"), help="override bus 1 routing: auto tries both (default: on, or auto with --broad)")
   parser.add_argument("--serial", help="Panda serial (required if several are connected)")
+  parser.add_argument("--direct", action="store_true", help="legacy direct Panda access; requires openpilot/pandad stopped")
   parser.add_argument("--details", action="store_true", help="also read raw UDS details and identifiers on fault-free modules (save with --evidence)")
   parser.add_argument("--max-details", type=int, default=16, help="maximum UDS faults per ECU for detail retrieval (default: 16)")
   parser.add_argument("--timeout", type=positive_seconds, default=1.0, help="absolute per-request timeout, including response-pending (seconds)")
@@ -960,30 +961,39 @@ def main(argv=None):
   report = None
   warnings = []
   try:
-    check_pandad()
     from opendbc.car.carlog import carlog
     from opendbc.car.structs import CarParams
-    from panda import Panda
     if args.debug:
       carlog.setLevel("DEBUG")
-    try:
-      dataset = load_dataset()
-    except (OSError, ValueError, EOFError) as e:
-      dataset = {}
-      warnings.append(f"Offline descriptions unavailable: {e}")
-    try:
-      known_targets = load_known_targets()
-      if not known_targets:
-        warnings.append("No brand hints loaded; generic discovery remains available")
-    except (ImportError, OSError) as e:
-      known_targets = {}
-      warnings.append(f"Brand hints unavailable; using generic discovery: {e}")
-    serials = Panda.list()
-    if args.serial is None and len(serials) > 1:
-      raise RuntimeError(f"Multiple pandas connected; choose --serial from {serials}")
-    # cli=False prevents Panda from prompting or printing into JSON stdout.
-    panda = Panda(serial=args.serial, cli=False)
-    report = scan(panda, args, dataset, known_targets, CarParams.SafetyModel)
+    if not args.direct:
+      if args.serial:
+        raise RuntimeError("--serial is only supported with --direct; coordinated scans use openpilot's Panda")
+      from openpilot.selfdrive.diagnostics.manager import DiagnosticManager
+      manager = DiagnosticManager()
+      result = manager.scan(args)
+      report = manager.store.get(result['scan_id'])['evidence']
+      report['scan_id'] = result['scan_id']
+    else:
+      check_pandad()
+      from panda import Panda
+      try:
+        dataset = load_dataset()
+      except (OSError, ValueError, EOFError) as e:
+        dataset = {}
+        warnings.append(f"Offline descriptions unavailable: {e}")
+      try:
+        known_targets = load_known_targets()
+        if not known_targets:
+          warnings.append("No brand hints loaded; generic discovery remains available")
+      except (ImportError, OSError) as e:
+        known_targets = {}
+        warnings.append(f"Brand hints unavailable; using generic discovery: {e}")
+      serials = Panda.list()
+      if args.serial is None and len(serials) > 1:
+        raise RuntimeError(f"Multiple pandas connected; choose --serial from {serials}")
+      # cli=False prevents Panda from prompting or printing into JSON stdout.
+      panda = Panda(serial=args.serial, cli=False)
+      report = scan(panda, args, dataset, known_targets, CarParams.SafetyModel)
   except Exception as e:
     report = {"schema_version": SCHEMA_VERSION, "report_kind": "technical_evidence", "status": "failed", "vehicle_coverage_complete": False,
               "ecus": [], "errors": [f"{type(e).__name__}: {e}"], "setup_error": True}
@@ -1011,7 +1021,7 @@ def main(argv=None):
     print(json.dumps(diagnosis_report(report), indent=2, ensure_ascii=False))
   else:
     print_report(report)
-  return 2 if report.get("setup_error") else (1 if report["status"] == "failed" else 0)
+  return 2 if report.get("setup_error") or report.get("recovery_required") else (1 if report["status"] == "failed" else 0)
 
 
 if __name__ == "__main__":

@@ -10,19 +10,46 @@ $Cxx.namespace("cereal");
 # DO rename the structs
 # DON'T change the identifier (e.g. @0x81c2f05a394cf4af)
 
-struct CustomReserved0 @0x81c2f05a394cf4af {
+struct DiagnosticRequest @0x81c2f05a394cf4af {
+  sessionId @0 :UInt64;
+  active @1 :Bool;
+  obd @2 :Bool;
+  route @3 :UInt32;
 }
 
-struct CustomReserved1 @0xaedffd8f31e7b55d {
+struct DiagnosticState @0xaedffd8f31e7b55d {
+  sessionId @0 :UInt64;
+  phase @1 :Phase;
+  obd @2 :Bool;
+  route @3 :UInt32;
+  error @4 :Text;
+  enum Phase {
+    idle @0;
+    preparing @1;
+    scanning @2;
+    restoring @3;
+  }
 }
 
-struct CustomReserved2 @0xf35cc4560bbf6ec2 {
+struct DiagnosticSendcan @0xf35cc4560bbf6ec2 {
+  sessionId @0 :UInt64;
+  route @1 :UInt32;
+  frames @2 :List(Frame);
+  struct Frame {
+    address @0 :UInt32;
+    dat @1 :Data;
+    src @2 :UInt8;
+  }
 }
 
-struct CustomReserved3 @0xda96579883444c35 {
+struct DiagnosticCardAck @0xda96579883444c35 {
+  sessionId @0 :UInt64;
+  route @1 :UInt32;
 }
 
-struct CustomReserved4 @0x80ae746ee2596b11 {
+struct DiagnosticControlsAck @0x80ae746ee2596b11 {
+  sessionId @0 :UInt64;
+  route @1 :UInt32;
 }
 
 struct CustomReserved5 @0xa5cd762cd951a455 {

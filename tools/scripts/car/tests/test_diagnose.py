@@ -1048,7 +1048,7 @@ class TestRoutesAndCache(IsolatedCacheTest):
              patch.object(d, "check_pandad"), patch.object(d, "load_known_targets", return_value={}), \
              patch.object(d.time, "monotonic", side_effect=clock.monotonic), patch.object(d.time, "sleep", side_effect=clock.sleep), \
              contextlib.redirect_stdout(io.StringIO()) as out, contextlib.redirect_stderr(io.StringIO()):
-          status = d.main(["--fast", "--json"])
+          status = d.main(["--direct", "--fast", "--json"])
         report = json.loads(out.getvalue())
         self.assertEqual(report["cache"]["routes_reused"], 1)
         self.assertEqual(report["discovery"], [])
@@ -1074,7 +1074,7 @@ class TestCLI(IsolatedCacheTest):
     with patch.dict(sys.modules, {"panda": SimpleNamespace(Panda=factory)}), \
          patch.object(d, "check_pandad"), patch.object(d, "load_known_targets", return_value={}), \
          contextlib.redirect_stdout(io.StringIO()) as out, contextlib.redirect_stderr(io.StringIO()):
-      status = d.main(["--addr", "0x7e0", "--obd", "on", "--json", "--timeout", "0.01", "--probe-timeout", "0.001", *extra_args])
+      status = d.main(["--direct", "--addr", "0x7e0", "--obd", "on", "--json", "--timeout", "0.01", "--probe-timeout", "0.001", *extra_args])
     factory.assert_called_once_with(serial=None, cli=False)
     self.assertEqual(panda.safety_modes[-1], (SAFETY.noOutput, 0))
     self.assertTrue(panda.closed)
@@ -1123,7 +1123,7 @@ class TestCLI(IsolatedCacheTest):
   def test_evidence_can_be_saved_after_setup_failure(self):
     path = self.cache_path.parent / "failed-evidence.json"
     with patch.object(d, "check_pandad", side_effect=RuntimeError("pandad is running")), contextlib.redirect_stdout(io.StringIO()) as out:
-      status = d.main(["--json", "--evidence", str(path)])
+      status = d.main(["--direct", "--json", "--evidence", str(path)])
     self.assertEqual(status, 2)
     self.assertTrue(json.loads(out.getvalue())["setup_error"])
     self.assertEqual(json.loads(path.read_text())["errors"], ["RuntimeError: pandad is running"])
@@ -1189,7 +1189,7 @@ class TestCLI(IsolatedCacheTest):
 
   def test_running_pandad_refuses_before_hardware_import(self):
     with patch.object(d.subprocess, "run", return_value=SimpleNamespace(returncode=0)), contextlib.redirect_stdout(io.StringIO()) as out:
-      code = d.main(["--json"])
+      code = d.main(["--direct", "--json"])
     report = json.loads(out.getvalue())
     self.assertEqual(code, 2)
     self.assertTrue(report["setup_error"])

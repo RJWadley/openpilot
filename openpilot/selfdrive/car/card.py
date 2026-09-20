@@ -20,6 +20,7 @@ from opendbc.car.car_helpers import get_car, interfaces
 from opendbc.car.interfaces import CarInterfaceBase, RadarInterfaceBase
 from openpilot.selfdrive.pandad import can_capnp_to_list, can_list_to_can_capnp
 from openpilot.selfdrive.car.cruise import VCruiseHelper
+from openpilot.selfdrive.diagnostics.interlock import DiagnosticInterlock
 
 REPLAY = "REPLAY" in os.environ
 
@@ -65,8 +66,9 @@ class Car:
 
   def __init__(self, CI=None, RI=None) -> None:
     self.can_sock = messaging.sub_sock('can', timeout=20)
-    self.sm = messaging.SubMaster(['pandaStates', 'carControl', 'onroadEvents'])
-    self.pm = messaging.PubMaster(['sendcan', 'carState', 'carParams', 'carOutput', 'radarTracks'])
+    self.sm = messaging.SubMaster(['pandaStates', 'carControl', 'onroadEvents', 'diagnosticState'],
+                                  ignore_alive=['diagnosticState'], ignore_avg_freq=['diagnosticState'], ignore_valid=['diagnosticState'])
+    self.pm = messaging.PubMaster(['sendcan', 'carState', 'carParams', 'carOutput', 'radarTracks', 'diagnosticCardAck'])
 
     self.can_rcv_cum_timeout_counter = 0
 
@@ -77,6 +79,7 @@ class Car:
     self.last_actuators_output = structs.CarControl.Actuators()
 
     self.params = Params()
+    self.diagnostics = DiagnosticInterlock(self.params.get_bool("DiagnosticRecoveryRequired"))
 
     self.can_callbacks = can_comm_callbacks(self.can_sock, self.pm.sock['sendcan'])
 
@@ -241,13 +244,19 @@ class Car:
 
   def step(self):
     CS, RD = self.state_update()
+    self.diagnostics.update(self.sm)
 
     self.state_publish(CS, RD)
 
     initialized = (not any(e.name == EventName.selfdriveInitializing for e in self.sm['onroadEvents']) and
                    self.sm.seen['onroadEvents'])
-    if not self.CP.passive and initialized:
+    if not self.CP.passive and initialized and not self.diagnostics.pause_controls:
       self.controls_update(CS, self.sm['carControl'])
+
+    # Ack only after normal control TX has stopped. Recovery deliberately permits
+    # the usual CI.init sequence following the manager's offroad/onroad cycle.
+    if self.diagnostics.blocked and not self.sm['carControl'].enabled:
+      self.diagnostics.acknowledge(self.pm, 'diagnosticCardAck', messaging)
 
     self.initialized_prev = initialized
     self.CS_prev = CS

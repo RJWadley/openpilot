@@ -63,8 +63,17 @@ void PandaSafety::setSafetyMode(const std::string &params_string) {
 
   cereal::CarParams::SafetyModel safety_model = safety_configs[0].getSafetyModel();
   uint16_t safety_param = safety_configs[0].getSafetyParam();
+  diagnostic_supported_ = !car_params.getNotCar() && car_params.getBrand() != "mock" && safety_configs.size() == 1;
+  expected_model_ = (uint16_t)safety_model;
+  expected_param_ = safety_param;
+  expected_experience_ = alternative_experience;
 
   LOGW("setting safety model: %d, param: %d, alternative experience: %d", (int)safety_model, safety_param, alternative_experience);
   panda_->set_alternative_experience(alternative_experience);
   panda_->set_safety_model(safety_model, safety_param);
+}
+
+bool PandaSafety::matches(const health_t &health) const {
+  return safety_configured_ && diagnostic_supported_ && health.safety_mode_pkt == expected_model_ &&
+         health.safety_param_pkt == expected_param_ && health.alternative_experience_pkt == expected_experience_;
 }

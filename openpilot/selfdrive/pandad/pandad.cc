@@ -1,4 +1,5 @@
 #include "selfdrive/pandad/pandad.h"
+#include "selfdrive/pandad/diagnostics.h"
 
 #include <array>
 #include <bitset>
@@ -56,12 +57,13 @@ Panda *connect(std::string serial) {
   return panda.release();
 }
 
-void can_send_thread(Panda *panda, bool fake_send) {
+void can_send_thread(Panda *panda, PandaDiagnostics *diagnostics, bool fake_send, bool diagnostic) {
   util::set_thread_name("pandad_can_send");
 
   AlignedBuffer aligned_buf;
   std::unique_ptr<Context> context(Context::create());
-  std::unique_ptr<SubSocket> subscriber(SubSocket::create(context.get(), "sendcan", "127.0.0.1", false, true, services.at("sendcan").queue_size));
+  const char *topic = diagnostic ? "diagnosticSendcan" : "sendcan";
+  std::unique_ptr<SubSocket> subscriber(SubSocket::create(context.get(), topic, "127.0.0.1", false, true, services.at(topic).queue_size));
   assert(subscriber != NULL);
   subscriber->setTimeout(100);
 
@@ -75,14 +77,7 @@ void can_send_thread(Panda *panda, bool fake_send) {
     capnp::FlatArrayMessageReader cmsg(aligned_buf.align(msg.get()));
     cereal::Event::Reader event = cmsg.getRoot<cereal::Event>();
 
-    // Don't send if older than 1 second
-    if ((nanos_since_boot() - event.getLogMonoTime() < 1e9) && !fake_send) {
-      LOGT("sending sendcan to panda: %s", (panda->hw_serial()).c_str());
-      panda->can_send(event.getSendcan());
-      LOGT("sendcan sent to panda: %s", (panda->hw_serial()).c_str());
-    } else {
-      LOGE("sendcan too old to send: %" PRIu64 ", %" PRIu64, nanos_since_boot(), event.getLogMonoTime());
-    }
+    diagnostics->send(event, diagnostic, fake_send);
   }
 }
 
@@ -363,10 +358,12 @@ void pandad_run(Panda *panda) {
   const bool fake_send = getenv("FAKESEND") != nullptr;
 
   // Start helper thread for event-driven sendcan.
-  std::thread send_thread(can_send_thread, panda, fake_send);
+  PandaDiagnostics diagnostics(panda);
+  std::thread send_thread(can_send_thread, panda, &diagnostics, fake_send, false);
+  std::thread diagnostic_thread(can_send_thread, panda, &diagnostics, fake_send, true);
 
   RateKeeper rk("pandad", 100);
-  SubMaster sm({"selfdriveState", "deviceState"});
+  SubMaster sm({"selfdriveState", "deviceState", "carState", "diagnosticRequest", "diagnosticCardAck", "diagnosticControlsAck"});
   PubMaster pm({"can", "pandaStates", "peripheralState"});
   PandaSafety panda_safety(panda);
   bool engaged = false;
@@ -389,7 +386,7 @@ void pandad_run(Panda *panda) {
         is_onroad = sm["deviceState"].getDeviceState().getStarted();
       }
       process_panda_state(panda, &pm, engaged, is_onroad, spoofing_started);
-      panda_safety.configureSafetyMode(is_onroad);
+      diagnostics.update(sm, panda_safety, is_onroad);
     }
 
     // Send out peripheralState at 2Hz
@@ -419,6 +416,7 @@ void pandad_run(Panda *panda) {
   }
 
   send_thread.join();
+  diagnostic_thread.join();
 }
 
 void pandad_main_thread(std::string serial) {

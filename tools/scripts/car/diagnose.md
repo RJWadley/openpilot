@@ -1,8 +1,10 @@
 # Diagnostic reader
 
 Run on an installed comma with the vehicle parked, ignition on, and openpilot
-stopped. This script takes direct ownership of the Panda. It refuses to run while
-`pandad` is running and does not stop or restart openpilot for you.
+running and initialized. The default connection uses the same coordinated scan
+engine as the [diagnostic MCP server](../../../openpilot/selfdrive/diagnostics/README.md).
+`pandad` keeps sole ownership of Panda. Engagement is blocked during the scan and
+recovery. Use Park, or Neutral with the parking brake on a manual car.
 
 From the openpilot checkout on the comma:
 
@@ -16,15 +18,22 @@ python tools/scripts/car/diagnose.py --json > diagnosis.json
 python tools/scripts/car/diagnose.py --details --evidence evidence.json --json > diagnosis.json
 ```
 
-If openpilot is running in the usual tmux session, stop it with
-`tmux kill-session -t comma` before scanning. The script leaves Panda in
-no-output mode when it exits, including after errors or Ctrl-C. Restart
-openpilot normally after the diagnostic session.
+Keep the car parked until recovery finishes. Recovery briefly cycles the onroad
+processes to rerun the car's usual initialization; `pandad` and MCP stay running.
+Reports and raw evidence are automatically saved locally (latest 20, up to 100 MiB).
+
+For the legacy standalone workflow, explicitly use `--direct`. Only that mode
+opens Panda itself, requires openpilot/pandad stopped, and leaves Panda in
+no-output mode on exit. It cannot provide the coordinated live vehicle-state
+checks or engagement lockout. Restart openpilot normally afterward.
 
 ## Automatic prerequisite checks
 
-Before sending diagnostic requests, the script checks Panda health/firmware
-compatibility, ignition, and (for an internal comma Panda) the car harness.
+Before sending diagnostic requests, the coordinated connection requires fresh
+parked/disengaged vehicle state, initialized car safety, ignition, and the harness.
+Both `card` and `selfdrived` must acknowledge the engagement/transmit interlock.
+The scanner also checks Panda health (firmware compatibility is enforced by
+`pandad`, or the Python Panda library in direct mode).
 Missing ignition, a missing harness, or an unreadable/incompatible Panda health
 packet stops the scan with a setup error. Either the ignition line or CAN ignition
 signal is sufficient. An external Panda without an ignition signal produces a
@@ -80,7 +89,8 @@ opt-in; a disconnected OBD route does not automatically enable it.
 `auto` tries both. Targeting keeps these same route defaults. Known opendbc
 subaddress hints can add probes, but reply addresses are learned rather than
 guessed. Supplying `--rx-addr` bypasses discovery and the module cache for that explicit pair.
-`--serial` selects one Panda when multiple are connected.
+`--serial` selects one Panda when multiple are connected in `--direct` mode.
+Coordinated scans currently require one Panda and a recognized real car.
 
 ## Fast scans and the module cache
 
@@ -282,8 +292,9 @@ not implement K-line, J1850, DoIP, CAN-FD diagnostics, or proprietary legacy fau
 services. Wiring, gateway restrictions, ECU wake/session requirements, and CAN
 bitrate can prevent access even on an openpilot-supported car. The installed
 camera harness alone does not guarantee access to the airbag or engine ECU.
-The normal Panda connection uses 500 kbit/s CAN. This implementation selects one
-Panda; it does not automatically span multiple pandas.
+Coordinated scans preserve openpilot's configured CAN bitrates. The legacy direct
+Panda connection initializes CAN to 500 kbit/s. Neither mode automatically spans
+multiple pandas.
 
 Protocol behavior is tested with a simulated Panda and the real opendbc ISO-TP
 implementation. Actual vehicle coverage still requires parked-car validation.

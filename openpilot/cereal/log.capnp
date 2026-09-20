@@ -132,6 +132,7 @@ struct OnroadEvent @0xc4fa6047f024e718 {
     excessiveActuation @96;
     bigModelLoading @100;
     bigModelFailed @102;
+    diagnosticsRunning @105;
 
     lowBatteryDEPRECATED @40;
     soundsUnavailableDEPRECATED @47;
@@ -2635,11 +2636,11 @@ struct Event {
     # DO change the name of the field and struct
     # DON'T change the ID (e.g. @107)
     # DON'T change which struct it points to
-    customReserved0 @107 :Custom.CustomReserved0;
-    customReserved1 @108 :Custom.CustomReserved1;
-    customReserved2 @109 :Custom.CustomReserved2;
-    customReserved3 @110 :Custom.CustomReserved3;
-    customReserved4 @111 :Custom.CustomReserved4;
+    diagnosticRequest @107 :Custom.DiagnosticRequest;
+    diagnosticState @108 :Custom.DiagnosticState;
+    diagnosticSendcan @109 :Custom.DiagnosticSendcan;
+    diagnosticCardAck @110 :Custom.DiagnosticCardAck;
+    diagnosticControlsAck @111 :Custom.DiagnosticControlsAck;
     customReserved5 @112 :Custom.CustomReserved5;
     customReserved6 @113 :Custom.CustomReserved6;
     customReserved7 @114 :Custom.CustomReserved7;

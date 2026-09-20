@@ -921,6 +921,12 @@ EVENTS: dict[int, dict[str, Alert | AlertCallbackType]] = {
     ET.NO_ENTRY: NoEntryAlert("Controls Mismatch"),
   },
 
+  EventName.diagnosticsRunning: {
+    ET.IMMEDIATE_DISABLE: ImmediateDisableAlert("Vehicle Diagnostics"),
+    ET.NO_ENTRY: NoEntryAlert("Vehicle Diagnostics Running"),
+    ET.PERMANENT: NormalPermanentAlert("Vehicle Diagnostics", "Engagement blocked until recovery completes"),
+  },
+
   # This alert can be thrown for the following reasons:
   # - No CAN data received at all
   # - CAN data is received, but some message are not received at the right frequency

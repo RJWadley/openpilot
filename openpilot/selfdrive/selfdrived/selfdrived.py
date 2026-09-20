@@ -21,6 +21,7 @@ from openpilot.selfdrive.locationd.helpers import PoseCalibrator, Pose
 from openpilot.selfdrive.selfdrived.events import Events, ET
 from openpilot.selfdrive.selfdrived.helpers import ExcessiveActuationCheck
 from openpilot.selfdrive.selfdrived.state import StateMachine
+from openpilot.selfdrive.diagnostics.interlock import DiagnosticInterlock
 from openpilot.selfdrive.selfdrived.alertmanager import AlertManager, set_offroad_alert
 
 from openpilot.common.version import get_build_metadata
@@ -49,6 +50,7 @@ IGNORED_SAFETY_MODES = (SafetyModel.silent, SafetyModel.noOutput)
 class SelfdriveD:
   def __init__(self, CP=None):
     self.params = Params()
+    self.diagnostics = DiagnosticInterlock(self.params.get_bool("DiagnosticRecoveryRequired"))
 
     # Ensure the current branch is cached, otherwise the first cycle lags
     build_metadata = get_build_metadata()
@@ -72,7 +74,7 @@ class SelfdriveD:
     self.big_model_ready_t = 0.
 
     # Setup sockets
-    self.pm = messaging.PubMaster(['selfdriveState', 'onroadEvents'])
+    self.pm = messaging.PubMaster(['selfdriveState', 'onroadEvents', 'diagnosticControlsAck'])
 
     self.gps_location_service = get_gps_location_service(self.params)
     self.gps_packets = [self.gps_location_service]
@@ -88,7 +90,8 @@ class SelfdriveD:
     if REPLAY:
       # no vipc in replay will make them ignored anyways
       ignore += ['narrowRoadCameraState', 'wideRoadCameraState']
-    self.sm = messaging.SubMaster(['deviceState', 'pandaStates', 'peripheralState', 'modelV2', 'extrinsicsCalibration',
+    ignore += ['diagnosticState']
+    self.sm = messaging.SubMaster(['deviceState', 'pandaStates', 'peripheralState', 'modelV2', 'extrinsicsCalibration', 'diagnosticState',
                                    'carOutput', 'driverMonitoringState', 'longitudinalPlan', 'deviceMotion', 'lateralDelay',
                                    'managerState', 'vehicleParameters', 'radarState', 'lateralTorqueParameters',
                                    'controlsState', 'carControl', 'driverAssistance', 'alertDebug', 'userBookmark',
@@ -154,6 +157,9 @@ class SelfdriveD:
     """Compute onroadEvents from carState"""
 
     self.events.clear()
+    self.diagnostics.update(self.sm)
+    if self.diagnostics.blocked:
+      self.events.add(EventName.diagnosticsRunning)
 
     if self.sm['controlsState'].lateralControlState.which() == 'debugState':
       self.events.add(EventName.joystickDebug)
@@ -348,7 +354,9 @@ class SelfdriveD:
     if self.big_model_active and big_failed:
       self.events.add(EventName.bigModelFailed)
 
-    not_running = {p.name for p in self.sm['managerState'].processes if not p.running and p.shouldBeRunning}
+    # The optional HTTP frontend is not a driving dependency. Active-session
+    # failures are handled independently by pandad and the diagnostic interlock.
+    not_running = {p.name for p in self.sm['managerState'].processes if not p.running and p.shouldBeRunning and p.name != 'diagnosticd'}
     if self.sm.recv_frame['managerState'] and len(not_running):
       if not_running != self.not_running_prev:
         cloudlog.event("process_not_running", not_running=not_running, error=True)
@@ -524,6 +532,9 @@ class SelfdriveD:
     self.AM.process_alerts(self.sm.frame, clear_event_types)
 
   def publish_selfdriveState(self, CS):
+    # This ack is emitted after the state machine processed the blocking event.
+    if self.diagnostics.blocked and not self.enabled:
+      self.diagnostics.acknowledge(self.pm, 'diagnosticControlsAck', messaging)
     # selfdriveState
     ss_msg = messaging.new_message('selfdriveState')
     ss_msg.valid = True
