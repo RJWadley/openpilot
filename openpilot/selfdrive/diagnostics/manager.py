@@ -45,6 +45,8 @@ class Operation:
   mutex: threading.Lock = field(default_factory=threading.Lock)
   result: dict | None = None
   last_saved: float = 0
+  accepting_scan: bool = False
+  followup: object = None
 
   def snapshot(self):
     with self.mutex:
@@ -212,7 +214,7 @@ class ReportStore:
     return state
 
 
-def scan_args(target=None, broad=False, fast=False, details=False):
+def scan_args(target=None, broad=False, fast=True, details=False):
   if any(type(v) is not bool for v in (broad, fast, details)):
     raise ValueError("broad, fast and details must be booleans")
   args = diagnose.make_parser().parse_args([])
@@ -234,9 +236,10 @@ class DiagnosticManager:
       transport_factory = MessagingPanda
     self.transport_factory = transport_factory
     self.lock = threading.Lock()
+    self.admission = threading.RLock()
     self.operation = None
 
-  def _reserve(self, cancel=None):
+  def _reserve(self, cancel=None, kind='scan'):
     if not self.lock.acquire(blocking=False):
       raise BusyError(self.get_status())
     lockfile = None
@@ -247,7 +250,8 @@ class DiagnosticManager:
       except BlockingIOError as e:
         raise BusyError(self.get_status()) from e
       scan_id, now = uuid.uuid4().hex, timestamp()
-      state = {'scan_id': scan_id, 'execution': 'running', 'phase': 'preflight', 'started_at': now, 'updated_at': now,
+      state = {'scan_id': scan_id, 'kind': kind, 'scan_requested': kind == 'scan',
+               'execution': 'running', 'phase': 'preflight', 'started_at': now, 'updated_at': now,
                'completed_at': None, 'collection_finished_at': None, 'report_ready': False, 'coverage': 'unknown',
                'vehicle_coverage_complete': False, 'restoration': {'state': 'not_started'},
                'progress': {'sequence': 0, 'message': 'Checking diagnostic prerequisites'}}
@@ -262,12 +266,34 @@ class DiagnosticManager:
       raise
 
   def start(self, args):
-    operation = self._reserve()
+    with self.admission:
+      operation = self.operation
+      if operation is not None and operation.accepting_scan and not operation.cancel.is_set():
+        # One explicit request may join startup preparation, including restoration.
+        # Keep its ID and waiters attached until fresh fault collection finishes.
+        with operation.mutex:
+          state = {**operation.state, 'kind': 'scan', 'scan_requested': True, 'updated_at': timestamp()}
+          self.store.save_status(state)
+          operation.state = state
+          operation.followup = deepcopy(args)
+          operation.accepting_scan = False
+        return operation
+      return self._start(args)
+
+  def prepare(self, args=None):
+    with self.admission:
+      return self._start(args or scan_args(), prepare=True)
+
+  def _start(self, args, prepare=False):
+    operation = self._reserve(kind='preparation' if prepare else 'scan')
+    operation.accepting_scan = prepare
     try:
-      threading.Thread(target=self._run, args=(operation, args), name='diagnostic-scan', daemon=True).start()
-    except BaseException:
-      operation.lockfile.close()
-      self.lock.release()
+      threading.Thread(target=self._run, args=(operation, args, prepare), name='diagnostic-scan', daemon=True).start()
+    except BaseException as e:
+      try:
+        self._update(operation, 'failed', 'Diagnostic worker could not start', execution='failed', error=str(e), completed_at=timestamp())
+      finally:
+        self._release(operation)
       raise
     return operation
 
@@ -284,9 +310,9 @@ class DiagnosticManager:
       operation.state.update(phase=phase, updated_at=timestamp(), **fields)
       operation.state['progress'] = {'sequence': operation.state['progress']['sequence'] + 1, 'message': message, **(progress_detail or {})}
       snapshot = deepcopy(operation.state)
-    if phase != old_phase or time.monotonic() - operation.last_saved >= 1:
-      self.store.save_status(snapshot)
-      operation.last_saved = time.monotonic()
+      if phase != old_phase or time.monotonic() - operation.last_saved >= 1:
+        self.store.save_status(snapshot)
+        operation.last_saved = time.monotonic()
 
   def get_status(self, scan_id='active'):
     if scan_id == 'latest':
@@ -320,26 +346,53 @@ class DiagnosticManager:
           raise ValueError('Saved report is no longer available for this scan') from None
       return {**state, 'report_ready': False, 'next_tool': 'get_scan_status' if state['execution'] == 'running' else None}
 
-  def _run(self, operation, args):
+  def _release(self, operation):
     try:
+      self.store.save_status(operation.snapshot())
+    finally:
+      operation.accepting_scan = False
+      operation.lockfile.close()
+      self.lock.release()
+      operation.done.set()
+
+  def _run(self, operation, args, prepare=False):
+    try:
+      if prepare:
+        evidence = self._scan(operation, args, prepare=True)
+        with self.admission:
+          operation.accepting_scan = False
+          args = operation.followup
+          if args is None or operation.cancel.is_set() or evidence['restoration']['state'] == 'unverified':
+            ready = evidence.get('inventory_ready', False) and not evidence.get('errors')
+            execution = 'cancelled' if operation.cancel.is_set() else 'finished' if ready else 'failed'
+            self._update(operation, 'complete' if execution == 'finished' else execution,
+                         'Diagnostics prepared; no fault report collected' if ready else
+                         'Diagnostics preparation incomplete; no fault report collected',
+                         execution=execution, completed_at=timestamp(), report_ready=False, inventory_ready=bool(ready),
+                         errors=evidence.get('errors', []), warnings=evidence.get('warnings', []))
+            # Release atomically with finishing preparation, so a new request cannot
+            # attach after the worker has decided there is no follow-up.
+            self._release(operation)
+            return
+          self._update(operation, 'preflight', 'Preparation finished; starting requested fresh fault scan',
+                       preparation={'inventory_ready': evidence.get('inventory_ready', False),
+                                    'restoration': evidence['restoration']},
+                       collection_finished_at=None, restoration={'state': 'not_started'}, coverage='unknown')
       self._scan(operation, args)
     except Exception as e:
       with operation.mutex:
         operation.state.update(execution='failed', phase='failed', error=f'{type(e).__name__}: {e}', completed_at=timestamp(),
                                updated_at=timestamp())
     finally:
-      try:
-        self.store.save_status(operation.snapshot())
-      finally:
-        operation.lockfile.close()
-        self.lock.release()
-        operation.done.set()
+      with self.admission:
+        if not operation.done.is_set():
+          self._release(operation)
 
-  def _scan(self, operation, args):
+  def _scan(self, operation, args, prepare=False):
     from opendbc.car.structs import CarParams
     warnings = []
     try:
-      dataset = diagnose.load_dataset()
+      dataset = {} if prepare else diagnose.load_dataset()
     except (OSError, ValueError, EOFError) as e:
       dataset = {}
       warnings.append(f"Offline descriptions unavailable: {e}")
@@ -354,8 +407,10 @@ class DiagnosticManager:
     try:
       transport = self.transport_factory(cancel=operation.cancel)
       def progress(event):
+        if hasattr(transport, 'set_preparing'):
+          transport.set_preparing(prepare or event['phase'] in ('preparing', 'discovering', 'verifying_cache', 'saving_inventory'))
         self._update(operation, event['phase'], event['message'], progress_detail={k: v for k, v in event.items() if k not in ('phase', 'message')})
-      evidence = diagnose.scan(transport, args, dataset, targets, CarParams.SafetyModel, progress=progress)
+      evidence = diagnose.scan(transport, args, dataset, targets, CarParams.SafetyModel, progress=progress, inventory_only=prepare)
     except Exception as e:
       evidence['errors'].append(f"{type(e).__name__}: {e}")
     finally:
@@ -382,6 +437,8 @@ class DiagnosticManager:
     execution = 'cancelled' if operation.cancel.is_set() else 'failed' if evidence['status'] == 'failed' else 'finished'
     evidence.update(scan_id=operation.scan_id, execution=execution, completed_at=timestamp(), restoration=restoration,
                     collection_finished_at=operation.state['collection_finished_at'])
+    if prepare:
+      return evidence  # Preparation must never replace latest diagnostic findings.
     operation.result = self.store.save(operation.scan_id, evidence)
     outcome = 'Scan complete' if execution == 'finished' else f'Scan {execution}'
     message = f'{outcome}; normal openpilot operation restored' if restoration['state'] == 'verified' else \

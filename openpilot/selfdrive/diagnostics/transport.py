@@ -15,6 +15,7 @@ class MessagingPanda:
     self.active = False
     self.closed = False
     self.acquired = False
+    self.preparing_diagnostics = False
     self.lock = threading.Lock()
     self.stop = threading.Event()
     self.failure = None
@@ -31,7 +32,8 @@ class MessagingPanda:
         msg = self.messaging.new_message('diagnosticRequest')
         msg.valid = True
         with self.lock:
-          msg.diagnosticRequest = {"sessionId": self.session_id, "active": self.active, "route": self.route, "obd": self.obd}
+          msg.diagnosticRequest = {"sessionId": self.session_id, "active": self.active, "route": self.route, "obd": self.obd,
+                                   "preparingDiagnostics": self.preparing_diagnostics}
         pm.send('diagnosticRequest', msg)
         self.stop.wait(0.1)
     except Exception as e:
@@ -44,6 +46,10 @@ class MessagingPanda:
     if not self.sm.valid['diagnosticState'] or not 0 < now - stamp < 1_000_000_000:
       raise RuntimeError("pandad diagnostic coordinator unavailable; build and restart openpilot first")
     return self.sm['diagnosticState']
+
+  def set_preparing(self, preparing):
+    with self.lock:
+      self.preparing_diagnostics = preparing
 
   def _check(self):
     if self.failure:

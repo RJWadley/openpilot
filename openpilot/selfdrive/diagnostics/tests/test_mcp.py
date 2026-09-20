@@ -164,7 +164,7 @@ class TestMCP(unittest.TestCase):
     self.assertEqual(messages[0]['result']['structuredContent']['restoration']['state'], 'verified')
     args = self.server.jobs[(self.sid, 2)].result
     self.assertEqual([(r['bus'], r['obd_multiplexing']) for r in args['routes']], [(1, True)])
-    self.assertFalse(args['cache']['fast_requested'])
+    self.assertTrue(args['cache']['fast_requested'])
 
   def stream_result(self, data):
     messages = [json.loads(line[6:]) for line in data.splitlines() if line.startswith('data: ')]

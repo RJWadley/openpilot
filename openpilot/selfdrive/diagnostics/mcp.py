@@ -30,9 +30,12 @@ FINDING_GUIDANCE = (
   'A completed scan covers the selected scope, not every installed module or overall vehicle health.'
 )
 SCAN_GUIDANCE = (
-  f'Fresh OBD-port discovery only; no harness scan or cached module inventory. Waits up to {WAIT_SECONDS} seconds by default. ' +
+  'Reads fresh faults through the OBD port only. Automatically reuses a persistent module inventory after a live VIN check; ' +
+  'otherwise discovers modules. Startup preparation discovers modules, not faults; a request during preparation joins it then reads faults. ' +
+  f'Waits up to {WAIT_SECONDS} seconds by default. ' +
   'Tell the user the comma screen shows diagnostic/engagement-block status (not detailed per-ECU progress); ' +
-  'higher-priority safety alerts can take precedence. Keep the car parked through restoration. ' +
+  'During discovery the screen says "preparing diagnostics"; higher-priority safety alerts can take precedence. ' +
+  'Keep the car parked through restoration. ' +
   'While execution is running, briefly relay changed phase/counts, then keep calling wait_for_scan with the same scan_id ' +
   'until terminal; no new scan approval is needed. Do not announce completion before restoration finishes. ' +
   'If a request times out or disconnects before receiving an ID, use wait_for_scan(scan_id="active"). ' +
@@ -52,7 +55,7 @@ TOOLS = [
     "Does not clear codes or code ECUs. Coverage is best effort, never a vehicle-wide clean bill of health. " +
     SCAN_GUIDANCE + " Native progress requires a client-supplied _meta.progressToken; displaying it depends on the client. " + FINDING_GUIDANCE,
    "inputSchema": {"type": "object", "properties": {
-     "target": {"type": "string", "description": "Optional physical ECU CAN address, e.g. 0x715; omitted means auto discovery."},
+     "target": {"type": "string", "description": "Optional physical ECU CAN address, e.g. 0x715; omitted means all discovered modules."},
      "details": {"type": "boolean", "default": False,
                  "description": "Leave false for routine scans. True adds optional raw UDS snapshot/extended records and scan time."},
      "wait": {"type": "boolean", "default": True,
@@ -72,7 +75,8 @@ TOOLS = [
      "additionalProperties": False},
    "annotations": {"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False}},
   {"name": "get_scan_status", "description": "Read lifecycle state without scanning or contacting the vehicle. " +
-    "Returns phase, real progress counts, timestamps, report_ready, coverage and restoration of normal openpilot operation separately. " +
+    "Returns kind, scan_requested, phase, real progress counts, timestamps, report_ready, coverage and restoration separately. " +
+    "A completed startup preparation has no fault report and does not mean the vehicle was checked for faults. " +
     "Execution completion, coverage gaps and restoration are independent; only restoration.state=verified confirms normal operation was restored. " +
     "An interrupted worker leaves restoration unknown; do not claim recovery or vehicle health.",
    "inputSchema": {"type": "object", "properties": {
@@ -144,6 +148,8 @@ class MCPServer(ThreadingHTTPServer):
 
   def cancel_all(self):
     with self.lock:
+      if self.manager.operation is not None:
+        self.manager.operation.cancel.set()
       for job in self.jobs.values():
         job.cancel.set()
       for stop in self.observers.values():
@@ -428,11 +434,15 @@ class MCPHandler(BaseHTTPRequestHandler):
 
 
 def main():
+  from openpilot.selfdrive.diagnostics.startup import start_preparation
   server = MCPServer(('127.0.0.1', int(os.getenv('DIAGNOSTIC_MCP_PORT', '8766'))),
                      allowed_hosts=filter(None, os.getenv('DIAGNOSTIC_MCP_HOSTS', '').split(',')),
                      allowed_origins=filter(None, os.getenv('DIAGNOSTIC_MCP_ORIGINS', '').split(',')),
                      token=os.getenv('DIAGNOSTIC_MCP_TOKEN') or None)
+  startup = start_preparation(server.manager)
   def stop(*_):
+    if startup is not None:
+      startup.close()
     server.cancel_all()
     threading.Thread(target=server.shutdown, daemon=True).start()
   signal.signal(signal.SIGTERM, stop)
@@ -440,6 +450,8 @@ def main():
   try:
     server.serve_forever(poll_interval=0.2)
   finally:
+    if startup is not None:
+      startup.close()
     server.cancel_all()
     server.server_close()
     # If manager kills us before cleanup finishes, pandad's lease expiry and

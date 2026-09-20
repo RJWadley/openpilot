@@ -92,6 +92,11 @@ void PandaDiagnostics::update(SubMaster &sm, PandaSafety &safety, bool onroad) {
     }
   }
   tx_until_ = safe && acknowledged(sm, now) ? now + 200000000ULL : 0;
+  ready_ = session_.phase == Phase::idle && safe && health && safety.matches(*health);
+  // Forward display intent only from the current, fresh lease. It never changes TX gates.
+  preparing_diagnostics_ = session_.phase == Phase::scanning && fresh(sm, "diagnosticRequest", now) &&
+                           req.getActive() && req.getSessionId() == session_.id && req.getRoute() == session_.route &&
+                           req.getPreparingDiagnostics();
   publish();
 }
 
@@ -103,6 +108,8 @@ void PandaDiagnostics::publish() {
   state.setObd(session_.obd);
   state.setPhase(static_cast<cereal::DiagnosticState::Phase>(session_.phase));
   state.setError(session_.error);
+  state.setPreparingDiagnostics(preparing_diagnostics_);
+  state.setReady(ready_);
   pm_.send("diagnosticState", msg);
 }
 

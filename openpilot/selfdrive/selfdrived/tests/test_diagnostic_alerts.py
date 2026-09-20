@@ -8,11 +8,12 @@ from openpilot.selfdrive.selfdrived.events import Events, EventName, ET
 
 
 class TestDiagnosticAlerts(unittest.TestCase):
-  def displayed(self, names, *, phase='scanning', steer=False, cruise=False, types=None):
+  def displayed(self, names, *, phase='scanning', preparing=False, steer=False, cruise=False, types=None):
     events, manager = Events(), AlertManager()
     cs = car.CarState.new_message(steerFaultPermanent=steer, accFaulted=cruise)
     message = messaging.new_message('diagnosticState')
     message.diagnosticState.phase = phase
+    message.diagnosticState.preparingDiagnostics = preparing
     sm = {'diagnosticState': message.diagnosticState}
     for frame in range(200):
       events.clear()
@@ -35,8 +36,15 @@ class TestDiagnosticAlerts(unittest.TestCase):
   def test_combined_faults_remain_visible_and_preparation_is_labeled(self):
     alert = self.displayed([EventName.diagnosticsRunning, EventName.steerUnavailable, EventName.accFaulted],
                            phase='preparing', steer=True, cruise=True)
-    self.assertEqual(alert.alert_text_1, 'Diagnostics: Preparing')
+    self.assertEqual(alert.alert_text_1, 'preparing diagnostics')
     self.assertIn('LKAS + Cruise faults reported', alert.alert_text_2)
+
+  def test_discovery_display_does_not_change_native_scanning_or_hide_faults(self):
+    alert = self.displayed([EventName.diagnosticsRunning, EventName.steerUnavailable], preparing=True, steer=True)
+    self.assertEqual(alert.alert_text_1, 'preparing diagnostics')
+    self.assertIn('LKAS fault', alert.alert_text_2)
+    alert = self.displayed([EventName.diagnosticsRunning], phase='restoring', preparing=True)
+    self.assertEqual(alert.alert_text_1, 'Diagnostics: Restoring')
 
   def test_restoring_and_stale_idle_never_claim_restoration_complete(self):
     for phase in ('restoring', 'idle'):

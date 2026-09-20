@@ -9,11 +9,13 @@ import threading
 import time
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import Mock, patch
 
 from openpilot.cereal import messaging
 from openpilot.selfdrive.diagnostics.manager import DiagnosticManager, ReportStore
 from openpilot.selfdrive.diagnostics.mcp import MCPServer
+from openpilot.selfdrive.diagnostics.startup import StartupPreparation
 from openpilot.selfdrive.diagnostics.transport import MessagingPanda
 from tools.scripts.car import diagnose
 from tools.scripts.car.tests.test_diagnose import FakePanda
@@ -40,6 +42,7 @@ class SimulatedCoordinator:
       target = diagnose.Target(0x7e0, 0x7e8)
       panda = FakePanda({target: {b'\x03': bytes.fromhex('43010202')}})
       active_id, route, phase, obd = 0, 0, 'idle', True
+      preparing = False
       restore_until = 0
       self.ready.set()
       while not self.stop.wait(0.005):
@@ -48,6 +51,7 @@ class SimulatedCoordinator:
           req = sm['diagnosticRequest']
           if req.active and not self.abort:
             active_id, route, phase, obd = req.sessionId, req.route, 'scanning', req.obd
+            preparing = req.preparingDiagnostics
             if not self.routes or self.routes[-1] != (route, obd):
               self.routes.append((route, obd))
           elif active_id and phase == 'scanning':
@@ -60,6 +64,7 @@ class SimulatedCoordinator:
         if not self.stale:
           state = messaging.new_message('diagnosticState', valid=True)
           state.diagnosticState = {'sessionId': active_id, 'route': route, 'obd': obd, 'phase': phase,
+                                   'preparingDiagnostics': phase == 'scanning' and preparing, 'ready': phase == 'idle',
                                    'error': 'state unsafe' if self.abort else ''}
           pm.send('diagnosticState', state)
         health = messaging.new_message('pandaStates', 1, valid=True)
@@ -135,6 +140,34 @@ class TestTransport(unittest.TestCase):
         panda.can_send(0x7e0, diagnose.single_frame(b'\x03'), 1)
     finally:
       panda.close()
+
+  def test_display_intent_survives_heartbeat_without_changing_native_phase(self):
+    from opendbc.car.structs import CarParams
+    panda = MessagingPanda()
+    try:
+      panda.set_preparing(True)
+      panda.set_safety_mode(CarParams.SafetyModel.elm327)
+      self.assertTrue(panda._state().preparingDiagnostics)
+      panda.set_preparing(False)
+      deadline = time.monotonic() + 2
+      while panda._state().preparingDiagnostics and time.monotonic() < deadline:
+        time.sleep(0.01)
+      self.assertFalse(panda._state().preparingDiagnostics)
+      self.assertEqual(str(panda._state().phase), 'scanning')
+    finally:
+      panda.close()
+
+  def test_startup_observes_coordinator_readiness_over_msgq(self):
+    called = threading.Event()
+    manager = SimpleNamespace(operation=None, prepare=Mock(side_effect=called.set))
+    with tempfile.TemporaryDirectory() as directory:
+      startup = StartupPreparation(manager, '11111111-1111-1111-1111-111111111111', Path(directory) / 'boot.json').start()
+      try:
+        self.assertTrue(called.wait(4))
+        manager.prepare.assert_called_once()
+        self.assertEqual(self.sim.routes, [])  # Observer itself owns no Panda/CAN session.
+      finally:
+        startup.close()
 
   def test_cancellation_still_allows_default_session_cleanup(self):
     from opendbc.car.structs import CarParams

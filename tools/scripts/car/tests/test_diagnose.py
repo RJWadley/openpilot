@@ -785,15 +785,56 @@ class TestRoutesAndCache(IsolatedCacheTest):
                           b"\x01\x00": bytes.fromhex("410000000000")},
             self.airbag: {b"\x19\x02\xff": bytes.fromhex("5902ff90161488")}}
 
-  def run_scan(self, argv=(), ecus=None, panda=None):
+  def run_scan(self, argv=(), ecus=None, panda=None, inventory_only=False):
     panda = panda or FakePanda(self.ecus() if ecus is None else ecus)
     args = d.make_parser().parse_args(list(argv))
     clock = FakeClock()
     with patch.object(d, "generic_probes", return_value={(self.engine.tx, None), (self.airbag.tx, None)}), \
          patch.object(d.time, "monotonic", side_effect=clock.monotonic), patch.object(d.time, "sleep", side_effect=clock.sleep), \
          contextlib.redirect_stderr(io.StringIO()):
-      report = d.scan(panda, args, {}, {}, SAFETY)
+      report = d.scan(panda, args, {}, {}, SAFETY, inventory_only=inventory_only)
     return report, panda
+
+  def test_preparation_discovers_without_reading_faults_and_reuses_after_restart(self):
+    report, panda = self.run_scan(['--fast'], inventory_only=True)
+    self.assertTrue(report['inventory_ready'])
+    self.assertTrue(report['cache']['updated'])
+    self.assertEqual(report['ecus'], [])
+    self.assertFalse(any(request[0] in (3, 7, 10, 0x19) for _, request in panda.requests))
+    contents = self.cache_path.read_bytes()
+    with patch.object(d, 'discover', side_effect=AssertionError('Inventory persists across scanner instances')):
+      verified, panda = self.run_scan(['--fast'], inventory_only=True)
+    self.assertTrue(verified['inventory_ready'])
+    self.assertEqual(verified['cache']['routes_reused'], 1)
+    self.assertEqual(self.cache_path.read_bytes(), contents)
+    self.assertIn((self.engine, b'\x22\xf1\x90'), panda.requests)
+    self.assertFalse(any(request[0] in (3, 7, 10, 0x19) for _, request in panda.requests))
+
+  def test_preparation_without_live_identity_does_not_publish_ready_inventory(self):
+    ecus = self.ecus()
+    ecus[self.engine][b'\x22\xf1\x90'] = b'\x62\xf1\x90invalid'
+    result, _ = self.run_scan(['--fast'], ecus=ecus, inventory_only=True)
+    self.assertFalse(result['inventory_ready'])
+    self.assertFalse(self.cache_path.exists())
+    self.assertEqual(result['status'], 'failed')
+
+  def test_preparation_after_vehicle_change_replaces_inventory_not_faults(self):
+    self.run_scan(['--fast'], inventory_only=True)
+    previous = d.load_module_cache(self.cache_path)['identity']['vin_hash']
+    result, _ = self.run_scan(['--fast'], ecus=self.ecus(b'WVWZZZAUZGW000002'), inventory_only=True)
+    self.assertTrue(result['inventory_ready'])
+    self.assertEqual(result['cache']['routes_reused'], 0)
+    self.assertNotEqual(d.load_module_cache(self.cache_path)['identity']['vin_hash'], previous)
+
+  def test_incompatible_inventory_version_is_rediscovered(self):
+    self.run_scan(['--fast'], inventory_only=True)
+    cache = d.load_module_cache(self.cache_path)
+    cache['version'] = -1
+    d.save_module_cache(self.cache_path, cache)
+    result, _ = self.run_scan(['--fast'], inventory_only=True)
+    self.assertTrue(result['inventory_ready'])
+    self.assertTrue(result['discovery'])
+    self.assertEqual(result['cache']['routes_reused'], 0)
 
   def test_route_selection_and_explicit_overrides(self):
     for argv, routes in (

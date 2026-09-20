@@ -1,13 +1,14 @@
 # Agent vehicle diagnostics
 
 `diagnosticd` is an `always_run` Python process managed by openpilot. It serves MCP
-at **`http://127.0.0.1:8766/mcp`**, onroad and offroad, but never scans at startup.
+at **`http://127.0.0.1:8766/mcp`**, onroad and offroad. On-device startup prepares
+the module inventory once it is safe; fault collection still requires a request.
 No model runtime or new Python dependency is required.
 
 ## Tools
 
 - `scan_vehicle(target?, details=false, wait=true)` starts
-  a fresh OBD-only scan and waits up to **20 seconds**, returning the first compact
+  an OBD-only scan of fresh faults and waits up to **20 seconds**, returning the first compact
   report page if complete or a progress snapshot with `next_tool=wait_for_scan`.
   `wait=false` instead returns its `scan_id` and lifecycle state immediately. An agent request
   is the approval; there is no on-device confirmation tap. Target is a physical CAN
@@ -63,7 +64,8 @@ delete, rewrite, or migrate old files; ordinary storage retention still applies.
 the producer version and negotiated MCP protocol version. Bump `SERVER_VERSION`
 for server releases to invalidate reports from previous implementations.
 
-MCP always performs fresh OBD-only discovery. `broad` and `fast` are no longer MCP
+MCP automatically reuses a persistent module inventory after a live VIN check,
+or discovers modules if it cannot safely reuse it. `broad` and `fast` are not MCP
 arguments; stale calls containing them are rejected before any vehicle access.
 The CLI retains `--broad` and `--fast` for advanced use. Fault/history interpretation,
 full OBDex entries, searchable unknown codes, and coverage limits are preserved.
@@ -73,6 +75,51 @@ tools. Session-control requests used by the reader remain narrowly allowlisted.
 Both the MCP tools and `tools/scripts/car/diagnose.py` call the same scanner.
 CLI defaults to coordinated access; `--direct` explicitly selects the older
 standalone Panda workflow and still refuses while pandad is running.
+
+## Startup preparation and persistent inventory
+
+On AGNOS, the MCP process waits for two seconds of fresh, native `diagnosticState.ready`:
+openpilot initialized, ignition on, parked, disengaged, and the coordinator idle.
+It then makes one automatic preparation attempt per OS boot. All existing native
+entry, continuous TX, engagement-block and restoration checks remain authoritative.
+It never starts automatically on a development computer.
+
+Preparation checks a saved inventory's live VIN; a match skips discovery. Otherwise
+it discovers OBD modules and saves their confirmed request/reply addresses, route,
+timestamp and hashed VIN in `/data/diagnostics/modules.json`. Only the current car's
+inventory is retained. It survives reboots and is reused until a different live VIN,
+unverifiable identity, incompatible/corrupt cache, or manual refresh requires discovery.
+The cache contains **no fault records or raw VIN**. Every requested fault scan verifies
+the live identity again and reads fresh diagnostic data; cached `CarVin`/`CarParams`
+are not proof of the connected vehicle's identity.
+
+Automatic preparation requests presence, identity and supported-emissions information,
+not DTCs or freeze frames. It publishes lifecycle status (`kind=preparation`,
+`scan_requested=false`, `inventory_ready`) but never creates/replaces a fault report
+or changes `latest`. The UI says **“preparing diagnostics”** during discovery and
+identity verification, including on-demand discovery. This is display intent, not a
+new native safety phase. Restoration retains its separate label.
+
+An MCP scan request during preparation attaches one follow-up to the same operation
+ID, waits through preparation/restoration, then reads fresh faults using the inventory.
+Further scan requests get the existing busy status. The same cross-process lock
+covers both stages; unsafe/unverified restoration or cancellation prevents the
+follow-up from starting. CLI requests still return busy rather than queueing.
+
+`preparation-boot.json` records the Linux boot ID before an automatic attempt, so
+diagnosticd restarts and restoration's offroad/onroad cycle cannot create a retry loop.
+An explicit scan already started in this process counts as that boot's preparation.
+Missing wiring/VIN, interrupted discovery or failures are not repeatedly retried at
+startup; an explicit scan can try again. Incomplete, ambiguous or unconfirmed discovery
+does not replace a usable inventory. A usable inventory is not a list of every installed
+module: new or previously missed modules require rediscovery.
+
+For a manual OBD inventory refresh, run `python tools/scripts/car/diagnose.py` without
+`--fast`, while parked with ignition on. It also collects fresh faults. Inventory
+format compatibility (`MODULE_CACHE_VERSION`) is independent of report/MCP versioning.
+Cached startup still pays a brief live verification and normal restoration; only
+discovery is skipped, not safety checks. No scan-time reduction is guaranteed until
+measured on the car.
 
 Tool descriptions instruct agents to show the exact DTC and ECU identity, use the
 supplied search query for missing descriptions when web search is available, cite

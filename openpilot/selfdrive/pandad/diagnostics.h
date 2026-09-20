@@ -24,4 +24,5 @@ private:
   std::mutex lock_;
   uint64_t tx_after_ = 0, tx_until_ = 0, elm_requested_at_ = 0;
   bool recovery_started_ = false, cycle_requested_ = false;
+  bool preparing_diagnostics_ = false, ready_ = false;
 };

@@ -412,7 +412,7 @@ def frame_payload(data, subaddress=None):
   return data[1:data[0] + 1]
 
 
-def discover(panda, probes, bus, obd, deadline, probe_wait=0.1, timeout=1.0, progress=None):
+def discover(panda, probes, bus, obd, deadline, probe_wait=0.1, timeout=1.0, progress=None, inventory_only=False):
   """Learn physical TX/RX pairs, then corroborate them with a different read service.
 
   Tester-present replies don't echo the request address. Serialize probes, discard
@@ -484,6 +484,7 @@ def discover(panda, probes, bus, obd, deadline, probe_wait=0.1, timeout=1.0, pro
       reader = Reader(wire, target)
       requests = [("obd_confirmation", b"\x01\x00", b"\x41\x00")] if target in emissions else [
         ("identity_confirmation", b"\x22\xf1\x97", b"\x62\xf1\x97"),
+        ("vin_confirmation", b"\x22\xf1\x90", b"\x62\xf1\x90") if inventory_only else
         ("dtc_confirmation", b"\x19\x02\xff", b"\x59\x02"),
       ]
       for name, request, prefix in requests:
@@ -601,6 +602,9 @@ def module_cache_path():
   return root / "diagnostics" / "modules.json"
 
 
+MODULE_CACHE_VERSION = 1  # Inventory compatibility is independent of report/MCP versions.
+
+
 def cached_target(data):
   target = Target(int(data["tx_address"], 16), int(data["rx_address"], 16), data["bus"], data["obd_multiplexing"], data["subaddress"])
   if (not valid_tx(target.tx) or not 0 <= target.rx <= 0x1FFFFFFF or type(target.bus) is not int or target.bus not in (0, 1, 2) or
@@ -612,7 +616,7 @@ def cached_target(data):
 
 def load_module_cache(path):
   data = json.loads(path.read_text())
-  if data["version"] != 1 or not isinstance(data["routes"], list):
+  if data["version"] != MODULE_CACHE_VERSION or not isinstance(data["routes"], list):
     raise ValueError("Unsupported module cache format")
   identity = data["identity"]
   identity_target = cached_target(identity["target"])
@@ -691,7 +695,7 @@ def coverage_gaps(report):
           'deadline_reached': report.get('deadline_reached', False), 'collection_errors': len(report.get('errors', []))}
 
 
-def scan(panda, args, dataset, known_targets, safety_model, progress=None):
+def scan(panda, args, dataset, known_targets, safety_model, progress=None, *, inventory_only=False):
   started = time.monotonic()
   deadline = started + args.scan_timeout
   report = {"schema_version": SCHEMA_VERSION, "report_kind": "technical_evidence",
@@ -771,20 +775,24 @@ def scan(panda, args, dataset, known_targets, safety_model, progress=None):
         found = cached_found
         emissions = {cached_target(t) for t in items if t["emissions"]} & found
         report["cache"]["routes_reused"] += 1
-        print(f"Using {len(found)} cached modules on bus {bus} ({'OBD port' if obd else 'harness'}); reading fresh faults…", file=sys.stderr)
+        print(f"Using {len(found)} verified cached modules on bus {bus} ({'OBD port' if obd else 'harness'})…", file=sys.stderr)
       else:
         route["source"] = "discovery"
         probes = selected_probes(args, known_targets, bus, obd)
         print(f"Learning ECU reply addresses on bus {bus} ({'OBD port' if obd else 'harness'}; {len(probes)} probes)…", file=sys.stderr)
-        found, emissions, discovery = discover(panda, probes, bus, obd, deadline, args.probe_timeout, args.timeout, progress=progress)
+        found, emissions, discovery = discover(panda, probes, bus, obd, deadline, args.probe_timeout, args.timeout,
+                                                progress=progress, inventory_only=inventory_only)
         report["discovery"].append(discovery)
         if discovery["unconfirmed"] or discovery["ambiguous"]:
           report["warnings"].append(f"Bus {bus} ({'OBD port' if obd else 'harness'}): " +
                                     f"{len(discovery['unconfirmed'])} unconfirmed and {len(discovery['ambiguous'])} ambiguous reply pairs " +
                                     "were not treated as identified ECUs. Their addresses and raw replies are in the discovery evidence.")
-      total = len(found)
-      update('reading', f'Reading {total} ECUs on bus {bus}', current=0, total=total, unit='ecus', bus=bus, obd_multiplexing=obd)
-      for index, target in enumerate(sorted(found, key=target_key)):
+      route['module_count'] = len(found)
+      reading_targets = [] if inventory_only else sorted(found, key=target_key)
+      total = len(reading_targets)
+      if not inventory_only:
+        update('reading', f'Reading {total} ECUs on bus {bus}', current=0, total=total, unit='ecus', bus=bus, obd_multiplexing=obd)
+      for index, target in enumerate(reading_targets):
         if time.monotonic() >= deadline:
           report["ecus"].append({**target.as_dict(), "dtc_read": False, "codes": [], "queries": [], "outcome": "not_queried"})
           continue
@@ -824,19 +832,24 @@ def scan(panda, args, dataset, known_targets, safety_model, progress=None):
     previous = cache["routes"] if cache and cache["identity"]["vin_hash"] == identity["vin_hash"] else []
     merged = {(r["bus"], r["obd_multiplexing"]): r for r in previous + refreshed}
     try:
-      save_module_cache(cache_path, {"version": 1, "identity": identity, "routes": list(merged.values())})
+      save_module_cache(cache_path, {"version": MODULE_CACHE_VERSION, "identity": identity, "routes": list(merged.values())})
       report["cache"]["updated"] = True
     except KeyboardInterrupt:
       report["errors"].append("Cache update interrupted; retained completed ECU results")
     except OSError as e:
       report["warnings"].append(f"Could not save module cache: {e}")
   if refreshed and identity is None:
-    report["warnings"].append("No live VIN available; module cache not updated. --fast requires a verified vehicle and will rediscover it.")
+    report["warnings"].append("No live VIN available; module cache not updated. Inventory reuse requires a live verified vehicle identity.")
   if report["cache"]["routes_reused"]:
-    report["warnings"].append("Fast scan checks cached modules only on reused routes; run without --fast to discover new or previously missed modules.")
+    report["warnings"].append("Cached inventory checks previously discovered modules only; " +
+                              "CLI scans without --fast rediscover new or previously missed modules.")
   report["elapsed_seconds"] = round(time.monotonic() - started, 3)
   report['coverage_gaps'] = coverage_gaps(report)
-  if not any(ecu["dtc_read"] for ecu in report["ecus"]):
+  if inventory_only:
+    report['report_kind'] = 'module_inventory'
+    report['inventory_ready'] = bool(report['cache']['updated'] or report['cache']['routes_reused'] == len(routes))
+    report['status'] = 'complete' if report['inventory_ready'] and not any(report['coverage_gaps'].values()) else 'failed'
+  elif not any(ecu["dtc_read"] for ecu in report["ecus"]):
     report["status"] = "failed"
   else:
     report['status'] = 'partial' if any(report['coverage_gaps'].values()) else 'complete'

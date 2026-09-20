@@ -224,7 +224,9 @@ AlertCallbackType = Callable[[car.CarParams, car.CarState, messaging.SubMaster, 
 def diagnostics_running_alert(CP: car.CarParams, CS: car.CarState, sm: messaging.SubMaster,
                               metric: bool, soft_disable_time: int, personality) -> Alert:
   phase = str(sm['diagnosticState'].phase)
-  title = {'preparing': 'Diagnostics: Preparing', 'restoring': 'Diagnostics: Restoring'}.get(phase, 'Vehicle Diagnostics')
+  title = {'preparing': 'preparing diagnostics', 'restoring': 'Diagnostics: Restoring'}.get(phase, 'Vehicle Diagnostics')
+  if phase == 'scanning' and sm['diagnosticState'].preparingDiagnostics:
+    title = 'preparing diagnostics'
   faults = [name for present, name in ((CS.steerFaultPermanent, 'LKAS'), (CS.accFaulted, 'Cruise')) if present]
   text = 'Engagement blocked'
   if faults:

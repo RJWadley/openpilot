@@ -15,6 +15,7 @@ struct DiagnosticRequest @0x81c2f05a394cf4af {
   active @1 :Bool;
   obd @2 :Bool;
   route @3 :UInt32;
+  preparingDiagnostics @4 :Bool;  # Display only; does not select a safety phase.
 }
 
 struct DiagnosticState @0xaedffd8f31e7b55d {
@@ -23,6 +24,8 @@ struct DiagnosticState @0xaedffd8f31e7b55d {
   obd @2 :Bool;
   route @3 :UInt32;
   error @4 :Text;
+  preparingDiagnostics @5 :Bool;
+  ready @6 :Bool;  # Fresh native parked/initialized checks allow requesting diagnostics.
   enum Phase {
     idle @0;
     preparing @1;
