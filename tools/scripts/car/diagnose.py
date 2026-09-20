@@ -276,7 +276,7 @@ def enrich_codes(result, entries):
     record["search"] = {"codes": representations, "query": f"{representations[0]} {context}".strip()}
 
 
-def query_ecu(transport, target, entries, details=False, max_details=16, obd=False):
+def query_ecu(transport, target, entries, details=False, max_details=16, obd=False, identity_callback=None):
   reader = Reader(transport, target)
   result = {**target.as_dict(), "codes": [], "queries": reader.queries, "dtc_read": False, "ignored_non_fault_records": 0}
   extended = False
@@ -314,6 +314,8 @@ def query_ecu(transport, target, entries, details=False, max_details=16, obd=Fal
         query = reader.read(name, request, b"\x62" + request[1:], lambda data: data.decode("utf-8", errors="replace").rstrip("\x00").strip())
         if query["outcome"] == "ok":
           result["identity"][name] = query["data"]
+      if identity_callback is not None:
+        identity_callback(result["identity"])
 
     # Collect the small decoded context before spending the budget on raw UDS details.
     if obd and (details or any(code["protocol"] == "obd" for code in result["codes"])):
@@ -410,7 +412,7 @@ def frame_payload(data, subaddress=None):
   return data[1:data[0] + 1]
 
 
-def discover(panda, probes, bus, obd, deadline, probe_wait=0.1, timeout=1.0):
+def discover(panda, probes, bus, obd, deadline, probe_wait=0.1, timeout=1.0, progress=None):
   """Learn physical TX/RX pairs, then corroborate them with a different read service.
 
   Tester-present replies don't echo the request address. Serialize probes, discard
@@ -420,6 +422,14 @@ def discover(panda, probes, bus, obd, deadline, probe_wait=0.1, timeout=1.0):
   confirmed, emissions, sent, answered = set(), set(), set(), set()
   evidence, unconfirmed = [], []
   wire = PandaTransport(panda, timeout, deadline)
+
+  def update():
+    if progress is not None:
+      progress({'phase': 'discovering', 'current': len(sent), 'total': len(probes), 'unit': 'addresses',
+                'bus': bus, 'obd_multiplexing': obd,
+                'message': f"Discovering modules: {len(sent)}/{len(probes)} addresses on bus {bus} ({'OBD port' if obd else 'harness'})"})
+
+  update()
 
   def receive_window():
     until = min(deadline, time.monotonic() + probe_wait)
@@ -490,6 +500,7 @@ def discover(panda, probes, bus, obd, deadline, probe_wait=0.1, timeout=1.0):
         unconfirmed.append({**target.as_dict(), "reason": "No matching response to a different read service; possibly delayed traffic."})
     if len(sent) % 128 == 0:
       print(f"Discovery: {len(sent)}/{len(probes)} addresses probed, {len(confirmed)} reply pairs confirmed…", file=sys.stderr)
+    update()
 
   by_request, by_reply = defaultdict(set), defaultdict(set)
   for target in confirmed:
@@ -669,7 +680,7 @@ def save_module_cache(path, data):
       temporary.unlink(missing_ok=True)
 
 
-def scan(panda, args, dataset, known_targets, safety_model):
+def scan(panda, args, dataset, known_targets, safety_model, progress=None):
   started = time.monotonic()
   deadline = started + args.scan_timeout
   report = {"schema_version": SCHEMA_VERSION, "report_kind": "technical_evidence",
@@ -682,7 +693,13 @@ def scan(panda, args, dataset, known_targets, safety_model):
   cache_path = module_cache_path()
   cache, identity, refreshed = None, None, []
   report["cache"] = {"fast_requested": args.fast, "path": str(cache_path), "routes_reused": 0, "updated": False}
+
+  def update(phase, message, **fields):
+    if progress is not None:
+      progress({'phase': phase, 'message': message, **fields})
+
   try:
+    update('preflight', 'Checking ignition, harness and Panda health')
     report["preflight"] = hardware_preflight(panda)
     for check in report["preflight"]["checks"]:
       print(f"Preflight [{check['status']}]: {check['message']}", file=sys.stderr)
@@ -706,6 +723,7 @@ def scan(panda, args, dataset, known_targets, safety_model):
       if time.monotonic() >= deadline:
         break
       bus, obd = route["bus"], route["obd_multiplexing"]
+      update('preparing', f"Preparing bus {bus} ({'OBD port' if obd else 'harness'})", bus=bus, obd_multiplexing=obd)
       route["outcome"] = "incomplete"
       panda.set_safety_mode(safety_model.elm327, 0 if obd else 1)
       panda.can_clear(0xFFFF)
@@ -719,6 +737,7 @@ def scan(panda, args, dataset, known_targets, safety_model):
           route["outcome"] = "skipped"
           continue
       if args.fast and cache and identity is None and args.rx_addr is None:
+        update('verifying_cache', 'Verifying cached vehicle identity', bus=bus, obd_multiplexing=obd)
         saved_identity = cache["identity"]
         target = cached_target(saved_identity["target"])
         if (target.bus, target.obd) == (bus, obd):
@@ -746,22 +765,31 @@ def scan(panda, args, dataset, known_targets, safety_model):
         route["source"] = "discovery"
         probes = selected_probes(args, known_targets, bus, obd)
         print(f"Learning ECU reply addresses on bus {bus} ({'OBD port' if obd else 'harness'}; {len(probes)} probes)…", file=sys.stderr)
-        found, emissions, discovery = discover(panda, probes, bus, obd, deadline, args.probe_timeout, args.timeout)
+        found, emissions, discovery = discover(panda, probes, bus, obd, deadline, args.probe_timeout, args.timeout, progress=progress)
         report["discovery"].append(discovery)
         if discovery["unconfirmed"] or discovery["ambiguous"]:
           report["warnings"].append(f"Bus {bus} ({'OBD port' if obd else 'harness'}): " +
                                     f"{len(discovery['unconfirmed'])} unconfirmed and {len(discovery['ambiguous'])} ambiguous reply pairs " +
                                     "were not treated as identified ECUs. Use --evidence FILE to save their addresses and raw replies.")
-      for target in sorted(found, key=target_key):
+      total = len(found)
+      update('reading', f'Reading {total} ECUs on bus {bus}', current=0, total=total, unit='ecus', bus=bus, obd_multiplexing=obd)
+      for index, target in enumerate(sorted(found, key=target_key)):
         if time.monotonic() >= deadline:
           report["ecus"].append({**target.as_dict(), "dtc_read": False, "codes": [], "queries": [], "outcome": "not_queried"})
           continue
         print(f"Reading bus {bus} ECU {target.tx:#x}…", file=sys.stderr)
+        def reading(identity=None, target=target, index=index, total=total):
+          label = (identity or {}).get('component', '')
+          update('reading', f"Reading {label + ' ' if label else ''}ECU {target.tx:#x} ({index + 1}/{total})",
+                 current=index, total=total, unit='ecus', ecu={**target.as_dict(), 'identity': identity or {}})
+        reading()
         # Standard emissions addresses may support modes 03/07/0A even without a PID 00 response.
         use_obd = target in emissions or 0x7E0 <= target.tx <= 0x7E7
-        result = query_ecu(transport, target, dataset.get("entries", {}), args.details, args.max_details, use_obd)
+        result = query_ecu(transport, target, dataset.get("entries", {}), args.details, args.max_details, use_obd, identity_callback=reading)
         result["identity_candidates"] = known_targets.get(target, [])  # Address matches are not vehicle identification.
         report["ecus"].append(result)
+        update('reading', f'Read {index + 1}/{len(found)} ECUs on bus {bus}', current=index + 1, total=len(found), unit='ecus',
+               ecu={**target.as_dict(), 'identity': result.get('identity', {})})
         if result.get("interrupted"):
           raise KeyboardInterrupt
         if result.get("error"):
@@ -771,6 +799,7 @@ def scan(panda, args, dataset, known_targets, safety_model):
         if (route["source"] == "discovery" and args.addr is None and not discovery["not_probed"] and
             not discovery["unconfirmed"] and not discovery["ambiguous"]):
           if identity is None:
+            update('saving_inventory', 'Checking vehicle identity for the module cache', bus=bus, obd_multiplexing=obd)
             identity = find_vehicle_identity(panda, found, args.timeout, deadline)
           refreshed.append({"bus": bus, "obd_multiplexing": obd, "scanned_at": report["started_at"],
                             "targets": [{**target.as_dict(), "emissions": target in emissions} for target in sorted(found, key=target_key)]})
@@ -797,6 +826,7 @@ def scan(panda, args, dataset, known_targets, safety_model):
   report["elapsed_seconds"] = round(time.monotonic() - started, 3)
   if not any(ecu["dtc_read"] for ecu in report["ecus"]):
     report["status"] = "failed"
+  update('collection_complete', 'Diagnostic data collection finished; restoration is a separate step')
   return report
 
 
@@ -806,7 +836,8 @@ def diagnosis_report(report):
     return report
   result = {key: report[key] for key in ("started_at", "status", "setup_error", "coverage", "vehicle_coverage_complete", "scope",
                                         "errors", "warnings", "elapsed_seconds", "deadline_reached", "description_database", "cache",
-                                        "evidence_file", "replay", "scan_id", "recovery_required") if key in report}
+                                        "evidence_file", "replay", "scan_id", "recovery_required", "execution", "restoration",
+                                        "collection_finished_at", "completed_at") if key in report}
   result.update(schema_version=SCHEMA_VERSION, report_kind="diagnosis", ecus=[],
                 interpretation="Fault/history records are not a count of active problems. Missing data does not mean healthy.",
                 reference_notice="OBDex entries are third-party reference material, not vehicle findings. " +
@@ -837,7 +868,8 @@ def diagnosis_report(report):
                     for name, _ in FREEZE_PIDS.values() if f"freeze_{name}" in successful}
     item["codes"] = []
     for code in ecu["codes"]:
-      fault = {key: code[key] for key in ("protocol", "code", "display_code", "failure_type", "status", "lookup", "search") if key in code}
+      fault = {key: code[key] for key in ("protocol", "code", "raw_dtc", "format", "status_byte", "display_code", "failure_type",
+                                        "status", "lookup", "search") if key in code}
       fault["status_summary"] = " ".join(STATUS_MEANINGS[flag] for flag in code["status"] if flag in STATUS_MEANINGS) or "Status unknown."
       # A generic OBD frame cannot safely be attached to a UDS code or a different ECU.
       if code["protocol"] == "obd" and code["code"] == successful.get("freeze_dtc") and code["code"] != "P0000" and measurements:

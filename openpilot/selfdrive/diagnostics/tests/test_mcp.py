@@ -4,26 +4,31 @@ import tempfile
 import threading
 import unittest
 
-from openpilot.selfdrive.diagnostics.manager import ReportStore
+from openpilot.selfdrive.diagnostics.manager import DiagnosticManager, ReportStore
 from openpilot.selfdrive.diagnostics.mcp import MCPServer
-from openpilot.selfdrive.diagnostics.tests.test_manager import evidence
+from openpilot.selfdrive.diagnostics.tests.test_lifecycle import ParkedPanda
 
 
-class FakeManager:
+class FakeManager(DiagnosticManager):
   def __init__(self, root):
-    self.store = ReportStore(root)
     self.calls = 0
     self.block = False
     self.started = threading.Event()
     self.cancelled = threading.Event()
+    self.release = threading.Event()
+    super().__init__(ReportStore(root), self.transport)
 
-  def scan(self, args, cancel):
+  def transport(self, cancel):
     self.calls += 1
-    self.started.set()
-    if self.block:
-      if cancel.wait(5):
-        self.cancelled.set()
-    return self.store.save(f'{self.calls:032x}', evidence())
+    owner = self
+    class Adapter(ParkedPanda):
+      def health(self):
+        owner.started.set()
+        if owner.block and cancel.wait(5):
+          owner.cancelled.set()
+        owner.release.set()
+        return super().health()
+    return Adapter(cancel, self.started, self.release)
 
 
 class TestMCP(unittest.TestCase):
@@ -73,20 +78,25 @@ class TestMCP(unittest.TestCase):
     self.initialize('2099-01-01')
     status, _, data = self.request(self.rpc('tools/list'))
     self.assertEqual(status, 200)
-    self.assertEqual([t['name'] for t in json.loads(data)['result']['tools']], ['scan_vehicle', 'get_scan_evidence'])
+    self.assertEqual([t['name'] for t in json.loads(data)['result']['tools']],
+                     ['scan_vehicle', 'get_scan_status', 'get_scan_report', 'get_scan_evidence'])
     self.assertEqual(self.request(self.rpc('ping'))[0], 200)
     self.assertEqual(self.request(method='GET')[0], 405)
     self.assertEqual(self.manager.calls, 0)
 
-  def test_scan_stream_and_evidence_without_rescan(self):
+  def test_async_scan_status_and_evidence_without_rescan(self):
     self.initialize()
     status, headers, data = self.request(self.rpc('tools/call', {'name': 'scan_vehicle', 'arguments': {'target': '0x715'}}))
     self.assertEqual(status, 200)
-    self.assertEqual(headers['Content-Type'], 'text/event-stream')
-    messages = [json.loads(line[6:]) for line in data.splitlines() if line.startswith('data: ')]
-    scan_id = messages[-1]['result']['structuredContent']['scan_id']
+    self.assertEqual(headers['Content-Type'], 'application/json')
+    scan_id = json.loads(data)['result']['structuredContent']['scan_id']
+    self.assertTrue(self.server.jobs[(self.sid, 2)].done.wait(4))
+    _, _, body = self.request(self.rpc('tools/call', {'name': 'get_scan_status', 'arguments': {'scan_id': scan_id}}, 4))
+    lifecycle = json.loads(body)['result']['structuredContent']
+    self.assertEqual(lifecycle['execution'], 'finished')
+    self.assertEqual(lifecycle['restoration']['state'], 'verified')
     _, _, body = self.request(self.rpc('tools/call', {'name': 'get_scan_evidence', 'arguments': {'scan_id': scan_id}}, 3))
-    self.assertEqual(json.loads(body)['result']['structuredContent']['report']['scan_id'], scan_id)
+    self.assertEqual(json.loads(body)['result']['structuredContent']['scan_id'], scan_id)
     self.assertEqual(self.manager.calls, 1)
     self.request(self.rpc('tools/call', {'name': 'scan_vehicle'}, 2))
     self.assertEqual(self.manager.calls, 1)  # same session/request ID is replayed
@@ -94,10 +104,11 @@ class TestMCP(unittest.TestCase):
   def test_cancel_and_busy(self):
     self.initialize()
     self.manager.block = True
-    connection, response = self.request(self.rpc('tools/call', {'name': 'scan_vehicle'}, 10), read=False)
+    connection, response = self.request(self.rpc('tools/call', {'name': 'scan_vehicle', 'arguments': {'wait': True}}, 10), read=False)
     self.assertTrue(self.manager.started.wait(1))
     _, _, busy = self.request(self.rpc('tools/call', {'name': 'scan_vehicle'}, 11))
     self.assertTrue(json.loads(busy)['result']['isError'])
+    self.assertEqual(json.loads(busy)['result']['structuredContent']['active_scan']['scan_id'], self.server.jobs[(self.sid, 10)].scan_id)
     self.assertEqual(self.request({'jsonrpc': '2.0', 'method': 'notifications/cancelled', 'params': {'requestId': 10}})[0], 202)
     self.assertTrue(self.manager.cancelled.wait(1))
     response.read()
@@ -106,7 +117,7 @@ class TestMCP(unittest.TestCase):
   def test_cancellation_does_not_cross_sessions(self):
     self.initialize()
     self.manager.block = True
-    connection, response = self.request(self.rpc('tools/call', {'name': 'scan_vehicle'}, 10), read=False)
+    connection, response = self.request(self.rpc('tools/call', {'name': 'scan_vehicle', 'arguments': {'wait': True}}, 10), read=False)
     original = self.sid
     self.sid = None
     self.initialize()
@@ -143,7 +154,7 @@ class TestMCP(unittest.TestCase):
   def test_delete_session_cancels_owned_work(self):
     self.initialize()
     self.manager.block = True
-    connection, response = self.request(self.rpc('tools/call', {'name': 'scan_vehicle'}, 10), read=False)
+    connection, response = self.request(self.rpc('tools/call', {'name': 'scan_vehicle', 'arguments': {'wait': True}}, 10), read=False)
     self.assertEqual(self.request(method='DELETE')[0], 200)
     self.assertTrue(self.manager.cancelled.wait(1))
     response.read()

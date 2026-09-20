@@ -170,21 +170,50 @@ class TestTransport(unittest.TestCase):
         request({'jsonrpc': '2.0', 'method': 'notifications/initialized'})
         with patch.object(diagnose, 'load_known_targets', return_value={}):
           data, _ = request({'jsonrpc': '2.0', 'id': 2, 'method': 'tools/call',
-                             'params': {'name': 'scan_vehicle', 'arguments': {'target': '0x7e0'}}})
+                             'params': {'name': 'scan_vehicle', 'arguments': {'target': '0x7e0', 'wait': True},
+                                        '_meta': {'progressToken': 'scan-progress'}}})
         responses = [json.loads(line[6:]) for line in data.splitlines() if line.startswith('data: ')]
         result = responses[-1]['result']
         self.assertFalse(result['isError'], result)
         report = result['structuredContent']
-        codes = [c for e in report['ecus'] for c in e['codes']]
+        codes = [i['fault'] for i in report['items'] if i['kind'] == 'fault']
         code = next(c for c in codes if c['code'] == 'P0202')
-        self.assertEqual(code['lookup']['entry']['code'], 'P0202')
+        self.assertTrue(code['lookup']['title'])
+        self.assertNotIn('entry', code['lookup'])
         self.assertFalse(report['vehicle_coverage_complete'])
+        self.assertEqual(report['restoration']['state'], 'verified')
+        progress = [message['params'] for message in responses if message.get('method') == 'notifications/progress']
+        self.assertTrue(progress)
+        self.assertTrue(all(p['progressToken'] == 'scan-progress' for p in progress))
+        self.assertTrue(all(b['progress'] > a['progress'] for a, b in zip(progress, progress[1:], strict=False)))
+        self.assertIn('normal openpilot operation restored', progress[-1]['message'])
         self.assertTrue(self.sim.recovered)
         stored = manager.store.get(report['scan_id'])
-        self.assertEqual(stored['report'], report)
+        self.assertTrue(any(c.get('lookup', {}).get('entry', {}).get('code') == 'P0202' for e in stored['report']['ecus'] for c in e['codes']))
         self.assertTrue(stored['evidence']['ecus'][0]['queries'])
+        data, _ = request({'jsonrpc': '2.0', 'id': 3, 'method': 'tools/call',
+                           'params': {'name': 'get_scan_report', 'arguments': {'scan_id': report['scan_id'], 'ecu': '0x7e0'}}})
+        page = json.loads(data)['result']['structuredContent']
+        self.assertLessEqual(len(json.dumps(page).encode()), 8000)
+        self.assertEqual(page['summary']['fault_history_records'], len(codes))
+        raw_codes, cursor = [], None
+        while True:
+          arguments = {'scan_id': report['scan_id'], 'ecu': '0x7e0', 'raw': True}
+          if cursor is not None:
+            arguments['cursor'] = cursor
+          data, _ = request({'jsonrpc': '2.0', 'id': 4, 'method': 'tools/call',
+                             'params': {'name': 'get_scan_evidence', 'arguments': arguments}})
+          page = json.loads(data)['result']['structuredContent']
+          self.assertLessEqual(len(json.dumps(page).encode()), 8000)
+          raw_codes.extend(i['value'] for i in page['items'] if i['kind'] == 'evidence' and i['path'][:3] == ['ecus', 0, 'codes'])
+          cursor = page['next_cursor']
+          if cursor is None:
+            break
+        self.assertTrue(any(c.get('lookup', {}).get('entry', {}).get('code') == 'P0202' for c in raw_codes))
       finally:
         server.cancel_all()
         server.shutdown()
         server.server_close()
         thread.join(timeout=2)
+        for job in server.jobs.values():
+          self.assertTrue(job.done.wait(5))

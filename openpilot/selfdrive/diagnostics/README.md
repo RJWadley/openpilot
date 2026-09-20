@@ -6,12 +6,39 @@ No model runtime or new Python dependency is required.
 
 ## Tools
 
-- `scan_vehicle(target?, broad=false, fast=false, details=false)` returns the
-  readable report and `scan_id`. An agent request is the approval; there is no
-  on-device confirmation tap. Target is a physical CAN address such as `0x715`.
-- `get_scan_evidence(scan_id="latest", ecu?)` reads the saved readable report and
-  raw evidence, without touching the car. ECU filtering is recommended for small
-  model context windows. The filter retains every route matching that address.
+- `scan_vehicle(target?, broad=false, fast=false, details=false, wait=false)` starts
+  a scan and immediately returns its `scan_id` and lifecycle state. An agent request
+  is the approval; there is no on-device confirmation tap. Target is a physical CAN
+  address such as `0x715`. A busy result includes `active_scan` and its ID; inspect
+  that operation instead of retrying the scan.
+- `get_scan_status(scan_id="active")` returns phase, progress, start/update/finish
+  timestamps, execution state, coverage, `report_ready`, and restoration state.
+  It never starts a scan or contacts the car. `active` selects the current/last
+  operation; `latest` selects the latest saved report's operation.
+- `get_scan_report(scan_id="latest", ecu?, cursor?, limit=20)` reads compact
+  findings: ECU identities, exact codes, status explanations, OBDex titles, counts,
+  decoded historical context and warnings. No raw replies or discovery-address lists.
+- `get_scan_evidence(scan_id="latest", ecu?, raw=false, cursor?, limit=20)` uses
+  the same compact default. Set `raw=true` for raw replies, discovery evidence and
+  **full, unchanged OBDex entries**. This does not run additional vehicle queries;
+  collecting optional snapshot/extended records requires `details=true` when scanning.
+
+Both report tools are bounded to **8,000 serialized JSON bytes per page** and
+1–50 records (`limit`). MCP's text and structured result representations duplicate
+that page on the wire. Follow `next_cursor` until null; the first page may not
+contain all faults. ECU filters apply to both compact and raw views, retaining all
+routes matching the transmit address. Summary counts always describe the entire
+scan. Cursors pin the original scan, even if another report becomes `latest`;
+keep the same ECU filter and raw setting. A pruned report's cursor returns an error.
+
+An oversized record becomes `json_fragment` items: concatenate `text` in `offset`
+order until `final=true`, then parse the JSON record. `total_chars` and `record_index`
+identify the fragment sequence. Raw records include a `path` within the filtered
+evidence document and its full `value`. No raw record is silently truncated.
+
+`latest` means latest **saved report**, not necessarily the running scan. Responses
+include `report_age_seconds` (since `started_at`), `active_scan_id` and `is_active_scan`.
+Older reports without lifecycle evidence explicitly say restoration is `unknown`.
 
 OBD-only discovery is the default. `broad` adds harness routes. The existing
 vehicle-verified cache behavior is unchanged. Fault/history interpretation, full
@@ -22,6 +49,14 @@ tools. Session-control requests used by the reader remain narrowly allowlisted.
 Both the MCP tools and `tools/scripts/car/diagnose.py` call the same scanner.
 CLI defaults to coordinated access; `--direct` explicitly selects the older
 standalone Panda workflow and still refuses while pandad is running.
+
+Tool descriptions instruct agents to show the exact DTC and ECU identity, use the
+supplied search query for missing descriptions when web search is available, cite
+trustworthy matches and state uncertainty. Code formatting is independent of
+description lookup: preserve raw DTCs and only use standardized display formatting
+when the encoding is established. Stored/confirmed is not proof of a current fault;
+freeze frames are historical, references are not diagnoses, and missing data is
+not evidence of health.
 
 ## Safe scan lifecycle
 
@@ -54,6 +89,18 @@ remains locked out. Do not manually remove `DiagnosticRecoveryRequired` to bypas
 an unresolved recovery. Check connections and restart openpilot/the device.
 An idle MCP frontend failure alone is not a driving-process fault.
 
+Execution and coverage are separate: `execution=finished` with `coverage=partial`
+is normal. Coverage can also be `unknown` before collection or `unavailable` when
+no DTC data was obtained. `collection_finished_at` does **not** mean restoration
+has completed. During cleanup, phase is `restoring`, execution remains `running`,
+and restoration state is `in_progress`. A fresh native coordinator idle response
+allows `restoration.state=verified` (normal openpilot operation restored).
+`not_needed` means this scan never requested diagnostic mode; it is not a general
+openpilot health check. A timeout/error yields `unverified`. A stopped worker with
+no terminal evidence yields `interrupted` and restoration `unknown`, never an
+assumed successful recovery. The status is a recorded observation, not a live
+vehicle-safety guarantee.
+
 These checks do not establish universal ECU coverage or prove that a car is safe
 to drive. Wiring and gateway/session restrictions still apply. ECU diagnostic
 session state cannot be universally verified; the quiet interval and normal
@@ -67,9 +114,26 @@ cap. On comma they live in `/data/diagnostics/reports`; on a PC the location is
 Bundles are atomically published with exclusive names and private file permissions.
 One cross-process lock excludes simultaneous CLI/MCP scans.
 
-MCP scan responses use POST SSE with keepalives/progress. A dropped HTTP connection
-does not cancel a scan: retrieve `latest` evidence after it finishes. Explicit MCP
-cancellation or session deletion asks the reader to stop and recover. A repeated
+Lifecycle records also survive restarts and are bounded to the latest 20 operations.
+Live progress is persisted at phase transitions and at most once a second within
+a phase; the server keeps the current in-memory state. `seconds_since_update`
+exposes the age of the last update, not an estimated percentage or time remaining.
+
+Default scan calls return JSON immediately. With `wait=true`, POST SSE keeps the
+request open and returns the first compact report page at completion. If the caller
+supplies `_meta.progressToken`, native `notifications/progress` carry increasing
+sequence values and real phase messages: discovery addresses checked, ECUs being
+read, current ECU address/reported identity, collection complete and restoration.
+Counts are per route and phase, not a vehicle-wide completeness percentage.
+Notifications stop at the final response. Without a token, SSE uses keepalives.
+An immediate-return request cannot continue emitting native progress after its
+response; poll `get_scan_status` instead. Experimental MCP Tasks are not required
+or advertised. ChatGPT's display/model exposure of notifications is not verified.
+
+A dropped HTTP connection does not cancel a scan: inspect its ID afterward.
+Explicit MCP cancellation applies only while the `wait=true` request is pending;
+session deletion or server shutdown also asks owned scans to stop and restore.
+A late cancellation for an already-returned async request is ignored. A repeated
 request ID in the same session reuses its job while retained (latest 20 completed
 jobs); it is not a durable global idempotency key.
 
@@ -123,7 +187,9 @@ openpilot/selfdrive/pandad/tests/test_diagnostic_session
 ```
 
 Tests include real HTTP/SSE, real Cereal/msgq, the existing ISO-TP engine, and
-simulated ECUs. Native session-policy tests cover gating/recovery. Those are not
+simulated ECUs, compact/raw paging and reconstruction, ECU filters, busy/cancel
+states, worker termination, persistence, and restoration/storage failures.
+Native session-policy tests cover gating/recovery. Those are not
 live vehicle, actual onroad-process restart, or ChatGPT-through-tunnel proof.
 First deployment requires a supervised parked-car check of entry refusal,
 engagement lockout, scan results, client termination, and successful restoration.

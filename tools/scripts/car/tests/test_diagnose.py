@@ -632,8 +632,10 @@ class TestReport(unittest.TestCase):
     self.assertEqual(ecu["codes"][0]["lookup"]["entry"], MISFIRE_ENTRY)
     for key in ("queries", "identity_candidates", "ignored_non_fault_records", "uds_status_availability"):
       self.assertNotIn(key, ecu)
-    for key in ("raw_dtc", "status_byte", "status_availability", "format"):
-      self.assertNotIn(key, ecu["codes"][0])
+    self.assertEqual(ecu['codes'][0]['raw_dtc'], '030100')
+    self.assertEqual(ecu['codes'][0]['format'], 4)
+    self.assertEqual(ecu['codes'][0]['status_byte'], 137)
+    self.assertNotIn('status_availability', ecu['codes'][0])
     self.assertNotIn("01abcdef", json.dumps(report))
     self.assertFalse(report["vehicle_coverage_complete"])
     self.assertEqual(report["summary"]["fault_history_records"], 4)
