@@ -1,12 +1,15 @@
 import http.client
 import json
+import os
 import tempfile
 import threading
 import unittest
+from pathlib import Path
 
 from openpilot.selfdrive.diagnostics.manager import DiagnosticManager, ReportStore
 from openpilot.selfdrive.diagnostics.mcp import MCPServer
 from openpilot.selfdrive.diagnostics.tests.test_lifecycle import ParkedPanda
+from openpilot.selfdrive.diagnostics.tests.test_manager import evidence
 
 
 class FakeManager(DiagnosticManager):
@@ -70,6 +73,7 @@ class TestMCP(unittest.TestCase):
     self.sid = headers['MCP-Session-Id']
     self.assertEqual(json.loads(data)['result']['protocolVersion'], '2025-11-25')
     self.assertEqual(self.request({'jsonrpc': '2.0', 'method': 'notifications/initialized'})[0], 202)
+    return json.loads(data)['result']
 
   def rpc(self, method, params=None, req_id=2):
     return {'jsonrpc': '2.0', 'id': req_id, 'method': method, 'params': params or {}}
@@ -83,6 +87,51 @@ class TestMCP(unittest.TestCase):
     self.assertEqual(self.request(self.rpc('ping'))[0], 200)
     self.assertEqual(self.request(method='GET')[0], 405)
     self.assertEqual(self.manager.calls, 0)
+
+  def test_saved_reports_use_the_advertised_server_version(self):
+    version = self.initialize()['serverInfo']['version']
+    self.manager.store.save('a' * 32, evidence())
+    bundle = self.manager.store.get()
+    self.assertEqual(bundle['server_version'], version)
+    self.assertEqual(bundle['report']['server_version'], version)
+    self.assertEqual(bundle['evidence']['server_version'], version)
+    for name, extra in (('get_scan_report', {}), ('get_scan_evidence', {}), ('get_scan_evidence', {'raw': True})):
+      _, _, data = self.request(self.rpc('tools/call', {'name': name, 'arguments': extra}))
+      result = json.loads(data)['result']
+      self.assertFalse(result['isError'], result)
+      self.assertEqual(result['structuredContent']['server_version'], version)
+    self.assertEqual(self.manager.calls, 0)
+
+  def test_incompatible_history_is_filtered_without_starting_a_scan(self):
+    version = self.initialize()['serverInfo']['version']
+    legacy_id = 'b' * 32
+    legacy_path = Path(self.tmp.name) / f'{legacy_id}.json'
+    legacy_data = json.dumps({'server_version': '2.0.0', 'report': {'old_fault_marker': True}, 'evidence': {}})
+    legacy_path.write_text(legacy_data)
+    reads = [('get_scan_report', {}), ('get_scan_evidence', {}), ('get_scan_evidence', {'raw': True}), ('get_scan_status', {})]
+    for name, extra in reads:
+      _, _, data = self.request(self.rpc('tools/call', {'name': name, 'arguments': {'scan_id': 'latest', **extra}}))
+      result = json.loads(data)['result']
+      self.assertTrue(result['isError'])
+      self.assertIn('No compatible saved reports', result['structuredContent']['error'])
+      self.assertIn('explicit request', result['structuredContent']['error'])
+      _, _, data = self.request(self.rpc('tools/call', {'name': name, 'arguments': {'scan_id': legacy_id, **extra}}))
+      self.assertTrue(json.loads(data)['result']['isError'])
+      self.assertIn('Incompatible report', data)
+
+    self.manager.store.save('a' * 32, evidence())
+    os.utime(Path(self.tmp.name) / f'{"a" * 32}.json', (1, 1))
+    for name, extra in reads:
+      _, _, data = self.request(self.rpc('tools/call', {'name': name, 'arguments': {'scan_id': 'latest', **extra}}))
+      result = json.loads(data)['result']
+      self.assertFalse(result['isError'], result)
+      self.assertEqual(result['structuredContent']['scan_id'], 'a' * 32)
+      if name != 'get_scan_status':
+        self.assertEqual(result['structuredContent']['server_version'], version)
+      self.assertNotIn('old_fault_marker', data)
+    self.assertEqual(legacy_path.read_text(), legacy_data)
+    self.assertEqual(self.manager.calls, 0)
+    self.assertFalse(self.server.jobs)
 
   def test_async_scan_status_and_evidence_without_rescan(self):
     self.initialize()

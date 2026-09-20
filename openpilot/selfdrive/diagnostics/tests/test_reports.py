@@ -1,9 +1,12 @@
 import json
+import os
 import tempfile
 import unittest
+from pathlib import Path
 
 from openpilot.selfdrive.diagnostics.manager import ReportStore
 from openpilot.selfdrive.diagnostics.tests.test_manager import evidence
+from openpilot.selfdrive.diagnostics.version import SERVER_VERSION
 
 
 class TestReports(unittest.TestCase):
@@ -75,3 +78,42 @@ class TestReports(unittest.TestCase):
     self.assertEqual(following['scan_id'], 'c' * 32)
     with self.assertRaises(ValueError):
       self.store.get_report('d' * 32, cursor=page['next_cursor'])
+
+  def legacy_report(self, scan_id, version=None):
+    # Real disk fixtures represent data produced before the currently running server.
+    bundle = {'report': {'scan_id': scan_id, 'legacy_marker': True}, 'evidence': {}}
+    if version is not None:
+      bundle['server_version'] = version
+    path = Path(self.tmp.name) / f'{scan_id}.json'
+    path.write_text(json.dumps(bundle))
+    return path
+
+  def test_latest_skips_missing_different_and_invalid_versions_without_rewriting_files(self):
+    self.store.save('a' * 32, evidence())
+    os.utime(Path(self.tmp.name) / f'{"a" * 32}.json', (1, 1))
+    files = [self.legacy_report(f'{i:032x}', version) for i, version in enumerate((None, '2.0.0', '99.0.0', 42), 1)]
+    snapshots = {path: path.read_bytes() for path in files}
+    for read in (self.store.get_report, self.store.get_evidence):
+      page = read()
+      self.assertEqual(page['scan_id'], 'a' * 32)
+      self.assertEqual(page['server_version'], SERVER_VERSION)
+    self.assertEqual(self.store.operation_status('latest')['scan_id'], 'a' * 32)
+    self.assertEqual({path: path.read_bytes() for path in files}, snapshots)
+
+  def test_incompatible_explicit_ids_and_empty_compatible_history_give_clear_errors(self):
+    for i, version in enumerate((None, '2.0.0', '99.0.0', True)):
+      scan_id = f'{i:032x}'
+      self.legacy_report(scan_id, version)
+      for read in (self.store.get, self.store.get_report, self.store.get_evidence, self.store.operation_status):
+        with self.subTest(version=version, reader=read.__name__), self.assertRaisesRegex(ValueError, 'Incompatible report'):
+          read(scan_id)
+    for read in (self.store.get_report, self.store.get_evidence, self.store.operation_status):
+      with self.assertRaisesRegex(ValueError, 'No compatible saved reports.*new scan'):
+        read('latest')
+
+  def test_cursor_cannot_bypass_version_check(self):
+    self.store.save('a' * 32, evidence(warnings=['first', 'second']))
+    cursor = self.store.get_report(limit=1)['next_cursor']
+    self.legacy_report('a' * 32, '2.0.0')
+    with self.assertRaisesRegex(ValueError, 'Incompatible report'):
+      self.store.get_report(cursor=cursor)

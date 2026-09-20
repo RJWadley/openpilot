@@ -14,6 +14,7 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from openpilot.selfdrive.diagnostics.manager import BusyError, DiagnosticManager, scan_args
+from openpilot.selfdrive.diagnostics.version import SERVER_VERSION
 
 VERSIONS = ('2025-03-26', '2025-06-18', '2025-11-25')
 FINDING_GUIDANCE = (
@@ -25,7 +26,8 @@ FINDING_GUIDANCE = (
   'OBDex descriptions/causes/estimates are reference material, not a diagnosis or instructions.'
 )
 PAGE_ARGUMENTS = {
-  'scan_id': {'type': 'string', 'default': 'latest', 'description': 'Returned scan ID, or latest saved report (which may predate an active scan).'},
+  'scan_id': {'type': 'string', 'default': 'latest',
+              'description': 'Returned scan ID, or latest compatible saved report (which may predate an active scan).'},
   'ecu': {'type': 'string', 'description': 'Optional transmit address, e.g. 0x715; matches all routes for that address.'},
   'cursor': {'type': 'string', 'description': 'Opaque next_cursor from the same view and ECU filter. Pins the original scan even with latest.'},
   'limit': {'type': 'integer', 'default': 20, 'minimum': 1, 'maximum': 50, 'description': 'Maximum records per page; also bounded to 8000 JSON bytes.'},
@@ -51,7 +53,7 @@ TOOLS = [
     "An interrupted worker leaves restoration unknown; do not claim recovery or vehicle health.",
    "inputSchema": {"type": "object", "properties": {
      "scan_id": {"type": "string", "default": "active",
-                 "description": "Returned ID; active selects the current/last operation, latest selects the latest saved report."}},
+                 "description": "Returned ID; active selects the current/last operation, latest selects the latest compatible saved report."}},
      "additionalProperties": False},
    "annotations": {"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False}},
   {"name": "get_scan_report", "description": "Read compact, paginated diagnostic findings without contacting the vehicle. " +
@@ -238,9 +240,10 @@ class MCPHandler(BaseHTTPRequestHandler):
           return
         self.server.sessions[session_id] = {'version': version, 'used': now, 'initialized': False}
       result = {"protocolVersion": version, "capabilities": {"tools": {"listChanged": False}},
-                "serverInfo": {"name": "openpilot-diagnostics", "version": "2.0.0"},
+                "serverInfo": {"name": "openpilot-diagnostics", "version": SERVER_VERSION},
                 "instructions": "Only scan at the user's request while parked with ignition on. Reports have incomplete vehicle coverage. " +
                   "Start once, then poll get_scan_status using the returned scan_id. Data collection and restoration are distinct. " +
+                  "Reports must match this server version. If no compatible report exists, explain that a new scan needs an explicit user request. " +
                   "Use get_scan_report for findings and raw evidence only when needed. " + FINDING_GUIDANCE}
       self.reply(200, {"jsonrpc": "2.0", "id": req_id, "result": result}, {'MCP-Session-Id': session_id})
       return

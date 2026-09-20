@@ -41,7 +41,7 @@ def paginate(report, *, view, ecu=None, cursor=None, limit=20):
   stable = {key: value for key, value in report.items() if key not in dynamic_keys}
   if len(json.dumps(stable).encode()) > 4000:
     items = [{'kind': 'metadata', 'value': stable}] + items
-    report = {key: report[key] for key in ('scan_id', 'interpretation', 'reference_notice', *dynamic_keys) if key in report}
+    report = {key: report[key] for key in ('scan_id', 'server_version', 'interpretation', 'reference_notice', *dynamic_keys) if key in report}
   if index > len(items) or (index == len(items) and offset):
     raise ValueError('Cursor is outside this report')
   page = {**report, 'view': view, 'ecu_filter': ecu, 'summary_scope': 'entire_scan', 'items': [], 'next_cursor': None}
@@ -110,7 +110,7 @@ def evidence_report(bundle):
 
 
 def compact_report(report):
-  result = {key: report[key] for key in ('scan_id', 'started_at', 'completed_at', 'execution', 'restoration',
+  result = {key: report[key] for key in ('scan_id', 'server_version', 'started_at', 'completed_at', 'execution', 'restoration',
                                         'coverage', 'vehicle_coverage_complete', 'scope', 'summary',
                                         'interpretation', 'reference_notice') if key in report}
   result.update(execution=report.get('execution', 'unknown'), restoration=report.get('restoration', {'state': 'unknown'}),

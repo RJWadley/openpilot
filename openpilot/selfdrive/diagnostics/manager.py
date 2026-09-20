@@ -14,6 +14,7 @@ from datetime import datetime, UTC
 
 from tools.scripts.car import diagnose
 from openpilot.selfdrive.diagnostics.reports import compact_report, coverage_status, decode_cursor, evidence_report, paginate
+from openpilot.selfdrive.diagnostics.version import SERVER_VERSION
 
 
 def storage_root():
@@ -28,6 +29,10 @@ class BusyError(RuntimeError):
   def __init__(self, status):
     super().__init__('A diagnostic scan is already running; inspect get_scan_status instead of retrying')
     self.status = status
+
+
+class IncompatibleReportError(ValueError):
+  pass
 
 
 @dataclass
@@ -60,9 +65,9 @@ class ReportStore:
   def save(self, scan_id, evidence):
     if not re.fullmatch(r"[0-9a-f]{32}", scan_id):
       raise ValueError("Invalid scan ID")
-    report = diagnose.diagnosis_report(evidence)
-    report['scan_id'] = scan_id
-    data = json.dumps({"report": report, "evidence": evidence}, allow_nan=False).encode()
+    evidence = {**evidence, 'server_version': SERVER_VERSION}
+    report = {**diagnose.diagnosis_report(evidence), 'scan_id': scan_id, 'server_version': SERVER_VERSION}
+    data = json.dumps({'server_version': SERVER_VERSION, "report": report, "evidence": evidence}, allow_nan=False).encode()
     if len(data) > self.byte_limit:
       raise ValueError("Report exceeds the local evidence storage limit")
     with self.lock:
@@ -82,20 +87,33 @@ class ReportStore:
           path.unlink()
     return report
 
+  def _read_report(self, path):
+    if path.is_symlink():
+      raise ValueError("Invalid report path")
+    data = json.loads(path.read_text())
+    version = data.get('server_version') if isinstance(data, dict) else None
+    if version != SERVER_VERSION:
+      found = repr(version[:64]) if isinstance(version, str) else 'missing or invalid'
+      raise IncompatibleReportError(f'Incompatible report {path.stem}: server_version is {found}; expected {SERVER_VERSION}. ' +
+                                    'A new scan is needed; scans require an explicit request.')
+    return data
+
   def get(self, scan_id="latest", ecu=None):
     with self.lock:
       if scan_id == "latest":
-        files = self._files()
-        if not files:
-          raise ValueError("No saved scans yet")
-        path = files[0]
+        for path in self._files():
+          try:
+            data = self._read_report(path)
+            break
+          except IncompatibleReportError:
+            continue
+        else:
+          raise ValueError(f'No compatible saved reports for server version {SERVER_VERSION}. ' +
+                           'A new scan is needed; scans require an explicit request.')
       elif re.fullmatch(r"[0-9a-f]{32}", scan_id):
-        path = self.root / f"{scan_id}.json"
+        data = self._read_report(self.root / f"{scan_id}.json")
       else:
         raise ValueError("Invalid scan ID")
-      if path.is_symlink():
-        raise ValueError("Invalid report path")
-      data = json.loads(path.read_text())
     if ecu is not None:
       address = int(ecu, 0)
       for view in ('report', 'evidence'):

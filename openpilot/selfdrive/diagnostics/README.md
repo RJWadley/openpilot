@@ -14,7 +14,7 @@ No model runtime or new Python dependency is required.
 - `get_scan_status(scan_id="active")` returns phase, progress, start/update/finish
   timestamps, execution state, coverage, `report_ready`, and restoration state.
   It never starts a scan or contacts the car. `active` selects the current/last
-  operation; `latest` selects the latest saved report's operation.
+  operation; `latest` selects the latest compatible saved report's operation.
 - `get_scan_report(scan_id="latest", ecu?, cursor?, limit=20)` reads compact
   findings: ECU identities, exact codes, status explanations, OBDex titles, counts,
   decoded historical context and warnings. No raw replies or discovery-address lists.
@@ -36,9 +36,20 @@ order until `final=true`, then parse the JSON record. `total_chars` and `record_
 identify the fragment sequence. Raw records include a `path` within the filtered
 evidence document and its full `value`. No raw record is silently truncated.
 
-`latest` means latest **saved report**, not necessarily the running scan. Responses
+`latest` means latest **compatible saved report**, not necessarily the running scan. Responses
 include `report_age_seconds` (since `started_at`), `active_scan_id` and `is_active_scan`.
-Older reports without lifecycle evidence explicitly say restoration is `unknown`.
+Unavailable lifecycle evidence is reported as restoration `unknown`.
+
+Every new report bundle, its readable report, and its raw evidence carry
+`server_version`, from the same `SERVER_VERSION` constant in `version.py` used by
+MCP initialization. Reads require an exact match. `latest` skips reports with a
+missing/different version; explicit IDs and pagination cursors return a clear
+incompatibility error. If none match, the tools explain that a new scan needs an
+explicit request; they never scan automatically. Compatibility checks do not
+delete, rewrite, or migrate old files; ordinary storage retention still applies.
+`schema_version` describes the diagnostic data format and remains separate from
+the producer version and negotiated MCP protocol version. Bump `SERVER_VERSION`
+for server releases to invalidate reports from previous implementations.
 
 OBD-only discovery is the default. `broad` adds harness routes. The existing
 vehicle-verified cache behavior is unchanged. Fault/history interpretation, full
