@@ -17,6 +17,7 @@ from openpilot.selfdrive.diagnostics.manager import BusyError, DiagnosticManager
 from openpilot.selfdrive.diagnostics.version import SERVER_VERSION
 
 VERSIONS = ('2025-03-26', '2025-06-18', '2025-11-25')
+WAIT_SECONDS = 20
 FINDING_GUIDANCE = (
   'Always show the exact DTC and ECU identity when discussing a fault. Preserve raw codes; never guess their encoding. ' +
   'If a description is missing and web search is available, search the supplied query, code, component and part number. ' +
@@ -29,12 +30,14 @@ FINDING_GUIDANCE = (
   'A completed scan covers the selected scope, not every installed module or overall vehicle health.'
 )
 SCAN_GUIDANCE = (
-  'Fresh OBD-port discovery only; no harness scan or cached module inventory. Waits for completion by default. ' +
+  f'Fresh OBD-port discovery only; no harness scan or cached module inventory. Waits up to {WAIT_SECONDS} seconds by default. ' +
   'Tell the user the comma screen shows diagnostic/engagement-block status (not detailed per-ECU progress); ' +
   'higher-priority safety alerts can take precedence. Keep the car parked through restoration. ' +
-  'If the request times out or disconnects, use get_scan_status(scan_id="active"); never restart it to check progress. ' +
-  'For asynchronous clients use wait=false, then poll get_scan_status with the returned scan_id. ' +
-  'Busy responses identify the existing operation. Use get_scan_report once report_ready.'
+  'While execution is running, briefly relay changed phase/counts, then keep calling wait_for_scan with the same scan_id ' +
+  'until terminal; no new scan approval is needed. Do not announce completion before restoration finishes. ' +
+  'If a request times out or disconnects before receiving an ID, use wait_for_scan(scan_id="active"). ' +
+  'Never call scan_vehicle again merely to check progress. Use wait=false for an immediate ID, get_scan_status for an immediate snapshot. ' +
+  'Busy responses identify the existing operation. Use get_scan_report for additional report pages once report_ready.'
 )
 PAGE_ARGUMENTS = {
   'scan_id': {'type': 'string', 'default': 'latest',
@@ -53,10 +56,21 @@ TOOLS = [
      "details": {"type": "boolean", "default": False,
                  "description": "Leave false for routine scans. True adds optional raw UDS snapshot/extended records and scan time."},
      "wait": {"type": "boolean", "default": True,
-              "description": "Recommended: leave true to wait for completion and the first compact report page via SSE. " +
-                             "Native progress requires _meta.progressToken. False returns a scan ID for status polling."}},
+              "description": f"Leave true to wait up to {WAIT_SECONDS} seconds. Returns findings if complete, otherwise progress and " +
+                             "next_tool=wait_for_scan. False returns an immediate ID. Native progress also requires _meta.progressToken."}},
      "additionalProperties": False},
    "annotations": {"readOnlyHint": False, "destructiveHint": False, "idempotentHint": False, "openWorldHint": False}},
+  {"name": "wait_for_scan", "description": f"Continue waiting up to {WAIT_SECONDS} seconds for an existing scan, including restoration. " +
+    "Never starts or cancels a scan, changes scan options, or contacts the vehicle. Returns immediately if already terminal. " +
+    "Returns current phase/counts/freshness and next_tool=wait_for_scan if still running; briefly relay changed progress, " +
+    "then call this tool again with the returned scan_id until terminal. Window expiry is normal, not a scan failure. " +
+    "On completion returns the first compact report page; follow next_cursor using get_scan_report. " +
+    "Stop waiting on failure, cancellation, interruption, or idle; report the state without starting another scan. " + FINDING_GUIDANCE,
+   "inputSchema": {"type": "object", "properties": {
+     "scan_id": {"type": "string", "default": "active",
+                 "description": "Returned scan ID. Use active only if the starting call lost its response; resolves once, then pins that scan."}},
+     "additionalProperties": False},
+   "annotations": {"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False}},
   {"name": "get_scan_status", "description": "Read lifecycle state without scanning or contacting the vehicle. " +
     "Returns phase, real progress counts, timestamps, report_ready, coverage and restoration of normal openpilot operation separately. " +
     "Execution completion, coverage gaps and restoration are independent; only restoration.state=verified confirms normal operation was restored. " +
@@ -86,6 +100,13 @@ def tool_result(value, error=False):
   return {"content": [{"type": "text", "text": json.dumps(value, allow_nan=False)}], "structuredContent": value, "isError": error}
 
 
+def continuation(status):
+  if status.get('execution') != 'running':
+    return status
+  return {**status, 'next_tool': 'wait_for_scan', 'next_arguments': {'scan_id': status['scan_id']},
+          'guidance': 'Scan still running. Briefly relay changed progress, then call wait_for_scan with this scan_id. Do not start another scan.'}
+
+
 class MCPServer(ThreadingHTTPServer):
   daemon_threads = True
   allow_reuse_address = True
@@ -100,6 +121,7 @@ class MCPServer(ThreadingHTTPServer):
     self.sessions = {}
     self.jobs = {}
     self.waiting = set()
+    self.observers = {}
     self.lock = threading.Lock()
     self.slots = threading.BoundedSemaphore(32)
     super().__init__(address, MCPHandler)
@@ -124,6 +146,8 @@ class MCPServer(ThreadingHTTPServer):
     with self.lock:
       for job in self.jobs.values():
         job.cancel.set()
+      for stop in self.observers.values():
+        stop.set()
 
   def start_scan(self, key, args):
     with self.lock:
@@ -193,6 +217,9 @@ class MCPHandler(BaseHTTPRequestHandler):
       for (sid, _), job in self.server.jobs.items():
         if sid == session_id:
           job.cancel.set()
+      for (sid, _), stop in self.server.observers.items():
+        if sid == session_id:
+          stop.set()
     self.reply(200 if session else 404)
 
   def do_POST(self):
@@ -276,6 +303,9 @@ class MCPHandler(BaseHTTPRequestHandler):
         if type(target) in (int, str):
           with self.server.lock:
             job = self.server.jobs.get((session_id, target))
+            observer = self.server.observers.get((session_id, target))
+            if observer is not None:
+              observer.set()  # Cancels this read-only wait, never the vehicle scan.
             if job is not None and (session_id, target) in self.server.waiting:
               job.cancel.set()
       self.reply(202)
@@ -311,18 +341,35 @@ class MCPHandler(BaseHTTPRequestHandler):
             with self.server.lock:
               self.server.waiting.add(key)
             try:
-              self.stream_job(req_id, job, token)
+              self.stream_scan(req_id, self.server.manager.get_status(job.scan_id), token)
             finally:
               with self.server.lock:
                 self.server.waiting.discard(key)
             return
-          result = tool_result(self.server.manager.get_status(job.scan_id))
+          result = tool_result(continuation(self.server.manager.get_status(job.scan_id)))
+        elif name == 'wait_for_scan':
+          # Resolve aliases once so a later scan cannot replace this observation.
+          status = self.server.manager.get_status(arguments.get('scan_id', 'active'))
+          meta = params.get('_meta', {})
+          token = meta.get('progressToken') if isinstance(meta, dict) else None
+          key, stop = (session_id, req_id), threading.Event()
+          with self.server.lock:
+            self.server.observers[key] = stop
+          try:
+            self.stream_scan(req_id, status, token, stop)
+          finally:
+            with self.server.lock:
+              self.server.observers.pop(key, None)
+          return
         elif name == 'get_scan_status':
-          result = tool_result(self.server.manager.get_status(**arguments))
+          result = tool_result(continuation(self.server.manager.get_status(**arguments)))
         else:
-          result = tool_result(self.server.manager.get_report(**arguments))
+          result = tool_result(continuation(self.server.manager.get_report(**arguments)))
       except BusyError as e:
-        result = tool_result({'error': str(e), 'active_scan': e.status, 'next_tool': 'get_scan_status'}, error=True)
+        result = tool_result({'error': str(e), 'active_scan': e.status, 'next_tool': 'wait_for_scan',
+                             'next_arguments': {'scan_id': e.status.get('scan_id') or 'active'}}, error=True)
+      except FileNotFoundError:
+        result = tool_result({'error': 'Unknown scan ID or scan no longer retained'}, error=True)
       except (OSError, ValueError, TypeError, RuntimeError) as e:
         result = tool_result({"error": str(e)}, error=True)
     else:
@@ -330,7 +377,10 @@ class MCPHandler(BaseHTTPRequestHandler):
       return
     self.reply(200, {"jsonrpc": "2.0", "id": req_id, "result": result})
 
-  def stream_job(self, req_id, job, progress_token):
+  def stream_scan(self, req_id, status, progress_token, stop=None):
+    deadline = time.monotonic() + WAIT_SECONDS
+    scan_id = status.get('scan_id')
+    stop = stop or threading.Event()
     self.send_response(200)
     self.send_header('Content-Type', 'text/event-stream')
     self.send_header('Cache-Control', 'no-cache, no-transform')
@@ -340,10 +390,8 @@ class MCPHandler(BaseHTTPRequestHandler):
     self.close_connection = True
     sequence, keepalive = -1, 0
     while True:
-      done = job.done.is_set()
-      status = job.snapshot()
-      progress = status['progress']
-      if type(progress_token) in (str, int) and progress['sequence'] > sequence:
+      progress = status.get('progress', {})
+      if type(progress_token) in (str, int) and progress.get('sequence', -1) > sequence:
         value = {"jsonrpc": "2.0", "method": "notifications/progress", "params": {
           "progressToken": progress_token, "progress": progress['sequence'], 'message': progress['message']}}
         self.wfile.write(('event: message\ndata: ' + json.dumps(value) + '\n\n').encode())
@@ -352,12 +400,26 @@ class MCPHandler(BaseHTTPRequestHandler):
         self.wfile.write(b': scan status available via get_scan_status\n\n')
         keepalive = time.monotonic()
       self.wfile.flush()
-      if done:
+      remaining = deadline - time.monotonic()
+      if status['execution'] != 'running' or remaining <= 0 or stop.is_set():
         break
-      job.done.wait(0.2)
-    failed = status['execution'] != 'finished' or status['restoration']['state'] in ('unknown', 'unverified')
+      stop.wait(min(0.2, remaining))
+      try:
+        status = self.server.manager.get_status(scan_id)
+      except (OSError, ValueError, TypeError, RuntimeError):
+        # Headers have already been sent: finish with an SSE tool error, never
+        # a second HTTP response or a claim that a missing worker recovered.
+        status = {**status, 'execution': 'interrupted', 'restoration': {'state': 'unknown'},
+                  'error': 'Scan status became unavailable; normal operation has not been verified'}
+        break
+    failed = status['execution'] in ('failed', 'cancelled', 'interrupted') or status.get('restoration', {}).get('state') in ('unknown', 'unverified')
     try:
-      result = self.server.manager.store.get_report(job.scan_id) if status['report_ready'] else status
+      if status['execution'] == 'running':
+        result = {**continuation(status), 'wait_expired': not stop.is_set(), 'wait_cancelled': stop.is_set(), 'wait_seconds': WAIT_SECONDS}
+      elif status.get('report_ready') and 'error' not in status:
+        result = self.server.manager.store.get_report(scan_id)
+      else:
+        result = {**status, 'next_tool': None}
     except (OSError, ValueError) as e:
       result, failed = {**status, 'error': str(e)}, True
     value = {"jsonrpc": "2.0", "id": req_id, "result": tool_result(result, failed)}

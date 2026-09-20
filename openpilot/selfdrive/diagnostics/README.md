@@ -7,11 +7,17 @@ No model runtime or new Python dependency is required.
 ## Tools
 
 - `scan_vehicle(target?, details=false, wait=true)` starts
-  a fresh OBD-only scan and waits for completion, returning the first compact report
-  page. `wait=false` instead returns its `scan_id` and lifecycle state immediately. An agent request
+  a fresh OBD-only scan and waits up to **20 seconds**, returning the first compact
+  report page if complete or a progress snapshot with `next_tool=wait_for_scan`.
+  `wait=false` instead returns its `scan_id` and lifecycle state immediately. An agent request
   is the approval; there is no on-device confirmation tap. Target is a physical CAN
   address such as `0x715`. A busy result includes `active_scan` and its ID; inspect
   that operation instead of retrying the scan.
+- `wait_for_scan(scan_id="active")` waits up to another **20 seconds** for that same
+  scan, including restoration. It never starts/cancels a scan or contacts the car.
+  `active` resolves once and is pinned for the duration of the call; subsequent
+  calls should use the returned ID. Completed/failed/interrupted/idle states return
+  immediately. A completed saved scan can be read after a frontend restart too.
 - `get_scan_status(scan_id="active")` returns phase, progress, start/update/finish
   timestamps, execution state, coverage, `report_ready`, and restoration state.
   It never starts a scan or contacts the car. `active` selects the current/last
@@ -26,7 +32,7 @@ No model runtime or new Python dependency is required.
   Leave `details=false` for routine scans; these extra queries add time.
 
 Reading a known scan's report before publication returns its lifecycle state,
-`report_ready=false` and `next_tool=get_scan_status`, not a filesystem error.
+`report_ready=false` and `next_tool=wait_for_scan`, not a filesystem error.
 Unknown/pruned IDs produce a readable error. Neither case starts another scan.
 
 Both report tools are bounded to **8,000 serialized JSON bytes per page** and
@@ -151,24 +157,40 @@ Live progress is persisted at phase transitions and at most once a second within
 a phase; the server keeps the current in-memory state. `seconds_since_update`
 exposes the age of the last update, not an estimated percentage or time remaining.
 
-Default scan calls use `wait=true`: POST SSE keeps the
-request open and returns the first compact report page at completion. If the caller
+Default scan calls use `wait=true`: POST SSE keeps the request open for at most
+20 seconds of waiting (plus response/network overhead). `wait_for_scan` uses the
+same window. Both return the first compact report page at completion or a normal
+tool result containing current progress, `wait_expired=true`, `next_tool` and
+`next_arguments` when the window expires. **A wait window expiring is not a scan
+timeout or cancellation.** The background worker and engagement interlock continue.
+Agents should briefly relay changed phase/counts, then call `wait_for_scan` again
+without asking for scan approval again. Do not repeatedly narrate unchanged status.
+Stop the wait loop on terminal states; do not start another scan automatically.
+
+20 seconds leaves margin below the approximately one-minute timeout observed in
+ChatGPT testing and offers regular voice updates without 10-second tool churn.
+This is our server-side choice, not a claim about a documented ChatGPT limit.
+Returned tool results provide model-readable progress without relying on pushed
+notifications or their presentation by the client. If the caller
 supplies `_meta.progressToken`, native `notifications/progress` carry increasing
 sequence values and real phase messages: discovery addresses checked, ECUs being
 read, current ECU address/reported identity, collection complete and restoration.
 Counts are per route and phase, not a vehicle-wide completeness percentage.
 Notifications stop at the final response. Without a token, SSE uses keepalives.
 An immediate-return request cannot continue emitting native progress after its
-response; poll `get_scan_status` instead. Experimental MCP Tasks are not required
+response; call `wait_for_scan` for another bounded wait or `get_scan_status` for an
+immediate snapshot. Experimental MCP Tasks are not required
 or advertised. ChatGPT's display/model exposure of notifications is not verified.
 
 A dropped HTTP connection does not cancel a scan: inspect its ID afterward, or
-use `get_scan_status("active")` if the client has not received the ID yet. Never
+use `wait_for_scan("active")` if the client has not received the ID yet. Never
 retry `scan_vehicle` merely to check progress. Clients with short tool-call timeouts
 can explicitly choose `wait=false` and poll status instead of holding a connection.
-Explicit MCP cancellation applies only while the `wait=true` request is pending;
-session deletion or server shutdown also asks owned scans to stop and restore.
-A late cancellation for an already-returned async request is ignored. A repeated
+Explicit MCP cancellation of `scan_vehicle` applies only while its initial
+`wait=true` request is pending. Cancellation of `wait_for_scan` ends only that
+read-only observation, never the scan. The initial scan's normal session deletion
+or server shutdown still asks its owned work to stop and restore.
+A late cancellation for an already-returned scan request is ignored. A repeated
 request ID in the same session reuses its job while retained (latest 20 completed
 jobs); it is not a durable global idempotency key.
 

@@ -3,8 +3,10 @@ import json
 import os
 import tempfile
 import threading
+import time
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from openpilot.selfdrive.diagnostics.manager import DiagnosticManager, ReportStore
 from openpilot.selfdrive.diagnostics.mcp import MCPServer
@@ -52,8 +54,8 @@ class TestMCP(unittest.TestCase):
       job.done.wait(2)
     self.tmp.cleanup()
 
-  def request(self, message=None, method='POST', headers=None, read=True):
-    connection = http.client.HTTPConnection('127.0.0.1', self.server.server_port, timeout=5)
+  def request(self, message=None, method='POST', headers=None, read=True, timeout=5):
+    connection = http.client.HTTPConnection('127.0.0.1', self.server.server_port, timeout=timeout)
     base = {'Content-Type': 'application/json', 'Accept': 'application/json, text/event-stream'}
     if self.sid:
       base.update({'MCP-Session-Id': self.sid, 'MCP-Protocol-Version': '2025-11-25'})
@@ -62,8 +64,10 @@ class TestMCP(unittest.TestCase):
     response = connection.getresponse()
     if not read:
       return connection, response
-    status, response_headers, data = response.status, dict(response.getheaders()), response.read().decode()
-    connection.close()
+    try:
+      status, response_headers, data = response.status, dict(response.getheaders()), response.read().decode()
+    finally:
+      connection.close()
     return status, response_headers, data
 
   def initialize(self, version='2025-11-25'):
@@ -83,7 +87,7 @@ class TestMCP(unittest.TestCase):
     status, _, data = self.request(self.rpc('tools/list'))
     self.assertEqual(status, 200)
     self.assertEqual([t['name'] for t in json.loads(data)['result']['tools']],
-                     ['scan_vehicle', 'get_scan_status', 'get_scan_report', 'get_scan_evidence'])
+                     ['scan_vehicle', 'wait_for_scan', 'get_scan_status', 'get_scan_report', 'get_scan_evidence'])
     self.assertEqual(self.request(self.rpc('ping'))[0], 200)
     self.assertEqual(self.request(method='GET')[0], 405)
     self.assertEqual(self.manager.calls, 0)
@@ -162,6 +166,149 @@ class TestMCP(unittest.TestCase):
     self.assertEqual([(r['bus'], r['obd_multiplexing']) for r in args['routes']], [(1, True)])
     self.assertFalse(args['cache']['fast_requested'])
 
+  def stream_result(self, data):
+    messages = [json.loads(line[6:]) for line in data.splitlines() if line.startswith('data: ')]
+    return messages[-1]['result']
+
+  def test_bounded_wait_returns_progress_and_can_be_resumed_without_rescan(self):
+    self.initialize()
+    self.manager.block = True
+    with patch('openpilot.selfdrive.diagnostics.mcp.WAIT_SECONDS', 0.1, create=True):
+      start = time.monotonic()
+      _, _, data = self.request(self.rpc('tools/call', {'name': 'scan_vehicle', 'arguments': {'target': '0x715'}}), timeout=0.6)
+      self.assertLess(time.monotonic() - start, 0.6)
+      result = self.stream_result(data)
+      self.assertFalse(result['isError'], result)
+      state = result['structuredContent']
+      scan_id = state['scan_id']
+      self.assertEqual(state['execution'], 'running')
+      self.assertFalse(state['report_ready'])
+      self.assertTrue(state['wait_expired'])
+      self.assertEqual(state['next_tool'], 'wait_for_scan')
+      self.assertEqual(state['next_arguments'], {'scan_id': scan_id})
+      self.assertIn('message', state['progress'])
+      self.assertIn('seconds_since_update', state)
+      self.assertTrue(self.manager.started.wait(2))
+      # A late client timeout/cancellation must not cancel the background scan.
+      self.request({'jsonrpc': '2.0', 'method': 'notifications/cancelled', 'params': {'requestId': 2}})
+      for request_id in (3, 4):
+        _, _, data = self.request(self.rpc('tools/call', {'name': 'wait_for_scan', 'arguments': {'scan_id': scan_id}}, request_id), timeout=0.6)
+        result = self.stream_result(data)
+        self.assertFalse(result['isError'], result)
+        self.assertEqual(result['structuredContent']['scan_id'], scan_id)
+        self.assertTrue(result['structuredContent']['wait_expired'])
+        self.assertFalse(self.server.jobs[(self.sid, 2)].cancel.is_set())
+      self.assertEqual(self.manager.calls, 1)
+
+  def test_wait_reports_restoration_then_returns_findings_when_restored(self):
+    self.initialize()
+    restore = threading.Event()
+    self.addCleanup(restore.set)
+    self.manager.release.set()
+    self.manager.transport_factory = lambda cancel: ParkedPanda(cancel, self.manager.started, self.manager.release, restore)
+    _, _, data = self.request(self.rpc('tools/call', {'name': 'scan_vehicle', 'arguments': {'target': '0x715', 'wait': False}}))
+    scan_id = json.loads(data)['result']['structuredContent']['scan_id']
+    with patch('openpilot.selfdrive.diagnostics.mcp.WAIT_SECONDS', 0.1):
+      deadline = time.monotonic() + 3
+      while self.manager.get_status(scan_id)['phase'] != 'restoring' and time.monotonic() < deadline:
+        time.sleep(0.01)
+      _, _, data = self.request(self.rpc('tools/call', {'name': 'wait_for_scan', 'arguments': {'scan_id': scan_id}}, 3))
+      state = self.stream_result(data)['structuredContent']
+      self.assertEqual(state['restoration']['state'], 'in_progress')
+      self.assertEqual(state['execution'], 'running')
+      self.assertFalse(state['report_ready'])
+      self.assertEqual(state['next_tool'], 'wait_for_scan')
+    # Completion wakes a pending read, not another full wait window.
+    with patch('openpilot.selfdrive.diagnostics.mcp.WAIT_SECONDS', 2):
+      connection, response = self.request(self.rpc('tools/call', {'name': 'wait_for_scan', 'arguments': {'scan_id': scan_id}}, 4), read=False)
+      start = time.monotonic()
+      restore.set()
+      result = self.stream_result(response.read().decode())
+      connection.close()
+      self.assertLess(time.monotonic() - start, 1)
+      self.assertFalse(result['isError'], result)
+      self.assertEqual(result['structuredContent']['scan_id'], scan_id)
+      self.assertEqual(result['structuredContent']['execution'], 'finished')
+      self.assertEqual(result['structuredContent']['restoration']['state'], 'verified')
+      self.assertIn('items', result['structuredContent'])
+
+  def test_readonly_wait_cancellation_does_not_cancel_the_scan(self):
+    self.initialize()
+    self.manager.block = True
+    self.request(self.rpc('tools/call', {'name': 'scan_vehicle', 'arguments': {'target': '0x715', 'wait': False}}))
+    job = self.server.jobs[(self.sid, 2)]
+    self.assertTrue(self.manager.started.wait(1))
+    # Another session can observe it, but cancelling that read cannot mutate it.
+    self.sid = None
+    self.initialize()
+    connection, response = self.request(self.rpc('tools/call', {'name': 'wait_for_scan', 'arguments': {'scan_id': job.scan_id}}, 3), read=False)
+    self.request({'jsonrpc': '2.0', 'method': 'notifications/cancelled', 'params': {'requestId': 3}})
+    result = self.stream_result(response.read().decode())
+    connection.close()
+    self.assertTrue(result['structuredContent']['wait_cancelled'])
+    self.assertFalse(job.cancel.is_set())
+    self.assertEqual(self.manager.calls, 1)
+
+  def test_wait_for_saved_report_idle_unknown_and_interrupted_are_terminal(self):
+    self.initialize()
+    _, _, data = self.request(self.rpc('tools/call', {'name': 'wait_for_scan'}))
+    self.assertEqual(self.stream_result(data)['structuredContent']['execution'], 'idle')
+    self.manager.store.save('a' * 32, evidence(execution='finished', restoration={'state': 'verified'}))
+    _, _, data = self.request(self.rpc('tools/call', {'name': 'wait_for_scan', 'arguments': {'scan_id': 'a' * 32}}))
+    result = self.stream_result(data)
+    self.assertFalse(result['isError'], result)
+    self.assertEqual(result['structuredContent']['scan_id'], 'a' * 32)
+    self.assertNotEqual(result['structuredContent'].get('next_tool'), 'wait_for_scan')
+    _, _, data = self.request(self.rpc('tools/call', {'name': 'wait_for_scan', 'arguments': {'scan_id': 'f' * 32}}))
+    self.assertTrue(json.loads(data)['result']['isError'])
+    self.assertNotIn(self.tmp.name, data)
+    # Persist a worker's running state but release its lock, just as after a crash.
+    operation = self.manager._reserve()
+    operation.lockfile.close()
+    self.manager.lock.release()
+    self.manager.operation = None
+    _, _, data = self.request(self.rpc('tools/call', {'name': 'wait_for_scan'}))
+    result = self.stream_result(data)
+    self.assertTrue(result['isError'])
+    self.assertEqual(result['structuredContent']['execution'], 'interrupted')
+    self.assertEqual(result['structuredContent']['restoration']['state'], 'unknown')
+    self.assertIsNone(result['structuredContent']['next_tool'])
+    self.assertEqual(self.manager.calls, 0)
+
+  def test_active_wait_pins_the_original_id_and_observes_persisted_progress(self):
+    self.initialize()
+    self.manager.block = True
+    self.request(self.rpc('tools/call', {'name': 'scan_vehicle', 'arguments': {'target': '0x715', 'wait': False}}))
+    scan_id = self.server.jobs[(self.sid, 2)].scan_id
+    self.assertTrue(self.manager.started.wait(2))
+    observer = DiagnosticManager(self.manager.store)  # no in-memory operation; observe persisted state
+    self.server.manager = observer
+    with patch.object(observer, 'get_status', wraps=observer.get_status) as status_read, \
+         patch('openpilot.selfdrive.diagnostics.mcp.WAIT_SECONDS', 0.1):
+      _, _, data = self.request(self.rpc('tools/call', {'name': 'wait_for_scan'}, 3))
+      result = self.stream_result(data)
+      self.assertEqual(result['structuredContent']['scan_id'], scan_id)
+      self.assertEqual(status_read.call_args_list[0].args, ('active',))
+      self.assertTrue(all(call.args == (scan_id,) for call in status_read.call_args_list[1:]))
+    self.assertEqual(self.manager.calls, 1)
+
+  def test_wait_status_read_failure_finishes_sse_without_claiming_recovery(self):
+    self.initialize()
+    self.manager.block = True
+    self.request(self.rpc('tools/call', {'name': 'scan_vehicle', 'arguments': {'target': '0x715', 'wait': False}}))
+    scan_id = self.server.jobs[(self.sid, 2)].scan_id
+    status = self.manager.get_status(scan_id)
+    with patch.object(self.manager, 'get_status', side_effect=[status, OSError('internal filesystem path')]):
+      _, headers, data = self.request(self.rpc('tools/call', {'name': 'wait_for_scan', 'arguments': {'scan_id': scan_id}}, 3))
+      self.assertEqual(headers['Content-Type'], 'text/event-stream')
+      result = self.stream_result(data)
+      self.assertTrue(result['isError'])
+      self.assertEqual(result['structuredContent']['execution'], 'interrupted')
+      self.assertEqual(result['structuredContent']['restoration']['state'], 'unknown')
+      self.assertIsNone(result['structuredContent']['next_tool'])
+      self.assertNotIn('internal filesystem path', data)
+      self.assertNotIn('HTTP/1.1', data)
+
   def test_scan_schema_is_fresh_obd_only_and_rejects_stale_mode_arguments(self):
     self.initialize()
     _, _, data = self.request(self.rpc('tools/list'))
@@ -187,7 +334,7 @@ class TestMCP(unittest.TestCase):
       self.assertEqual(state['scan_id'], scan_id)
       self.assertEqual(state['execution'], 'running')
       self.assertFalse(state['report_ready'])
-      self.assertEqual(state['next_tool'], 'get_scan_status')
+      self.assertEqual(state['next_tool'], 'wait_for_scan')
       self.assertNotIn(self.tmp.name, data)
     self.assertEqual(self.manager.calls, 1)
 

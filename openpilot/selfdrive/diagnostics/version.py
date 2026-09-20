@@ -4,4 +4,4 @@ Bump this for server releases; only exactly matching saved reports are readable.
 This is independent of the MCP protocol and diagnostic schema versions.
 """
 
-SERVER_VERSION = '3.0.0'
+SERVER_VERSION = '3.1.0'
